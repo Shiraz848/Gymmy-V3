@@ -4,7 +4,7 @@ A robotic system for physical therapy rehabilitation exercises, featuring person
 
 ## Overview
 
-Gymmy is an interactive robotic assistant designed to help patients perform physical therapy exercises at home. The system uses computer vision to track patient movements and provides real-time feedback through a humanoid robot.
+Gymmy is an interactive robotic assistant designed to help patients perform physical therapy exercises. The system uses computer vision to track patient movements and provides real-time feedback through a humanoid robot.
 
 ### Key Features
 
@@ -149,19 +149,12 @@ EXERCISE_CONFIG = {
 
 ## Contributing
 
-This project was developed as a final project for [University Name].
-
-## License
-
-[License information]
+This project was developed as a final project for Ben-Gurion University.
 
 ## Acknowledgments
 
 - Stereolabs for ZED SDK
 - Robotis for OP2 robot platform
-- [Supervisor name] for project guidance
+- Prof. Yael Edan and Dr. Shirley Handelzalts for project guidance
 
-## Contact
-
-[Your contact information]
 
