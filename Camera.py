@@ -13,6 +13,9 @@ from PyZedWrapper import PyZedWrapper
 import Settings as s
 import time
 import Excel
+import CalibrationLogic
+import ExerciseConfig
+
 from scipy.signal import lfilter
 
 
@@ -181,6 +184,335 @@ class Camera(threading.Thread):
         # Create the dictionary with empty lists
         self.body_parts_dict = {key: [] for key in keys}
 
+        # ==================== ROM ASSESSMENT DATA ====================
+        # Storage for angle data during ROM assessment exercises
+        # We use a dictionary to store lists for MULTIPLE joints simultaneously
+        # Example: { 'shoulder_flexion_right': [120, 122...], 'shoulder_flexion_left': [110, 115...] }
+        self.rom_recording_data = {} 
+        self.current_rom_test = None 
+        self._rom_recording_active = False 
+        
+        # Mapping of ROM test exercise names to their configuration
+        # Now supports a LIST of targets per exercise to allow measuring Left & Right together
+        self.rom_test_map = {
+    # ==================== 1. SHOULDER FLEXION ====================
+            "ball_raise_arms_above_head": [
+                {"angle_index": 0, "joint_key": "shoulder_flexion_right", "default_threshold": 140},
+                {"angle_index": 1, "joint_key": "shoulder_flexion_left", "default_threshold": 140}
+            ],
+            
+            # ==================== 2. SHOULDER ABDUCTION ====================
+            "band_open_arms": [
+                {"angle_index": 0, "joint_key": "shoulder_abduction_right", "default_threshold": 120},
+                {"angle_index": 1, "joint_key": "shoulder_abduction_left", "default_threshold": 120}
+            ],
+            
+            # ==================== 3. ELBOW FLEXION ====================
+            "ball_bend_elbows": [
+                {"angle_index": 0, "joint_key": "elbow_flexion_right", "default_threshold": 140},
+                {"angle_index": 1, "joint_key": "elbow_flexion_left", "default_threshold": 140}
+            ],
+            
+            # ==================== 4. TORSO ROTATION ====================
+            "stick_switch": [
+                {"angle_index": 2, "joint_key": "torso_rotation_right", "default_threshold": 130},
+                {"angle_index": 3, "joint_key": "torso_rotation_left", "default_threshold": 130}
+            ],
+            
+            # ==================== 5. LATERAL LEAN ====================
+            "notool_hands_behind_and_lean": [
+                {"angle_index": 2, "joint_key": "lateral_lean_right", "default_threshold": 140},
+                {"angle_index": 3, "joint_key": "lateral_lean_left", "default_threshold": 140}
+            ]
+        }
+
+    def get_dynamic_threshold(self, threshold_key, default_value, side=None):
+        """
+        Get a dynamic threshold based on patient-specific ROM limits.
+        
+        NEW FORMAT (per-exercise):
+            {exercise_name}_{side}_{position}_{bound}
+            Example: ball_bend_elbows_right_up_ub
+        
+        Args:
+            threshold_key: The key to look up (e.g., "ball_bend_elbows_up_lb")
+            default_value: Default value if no ROM data exists
+            side: Optional - 'right' or 'left' for side-specific threshold
+                  If None, uses fallback/aggregation logic
+        
+        Returns:
+            The threshold value (personalized if available, else default)
+        """
+        # Check if we have patient-specific ROM limits
+        if not hasattr(s, 'patient_rom_limits') or not s.patient_rom_limits:
+            return default_value
+        
+        # ==================== DIRECT MATCH ====================
+        # Try to find the key directly in patient_rom_limits
+        if threshold_key in s.patient_rom_limits:
+            value = s.patient_rom_limits[threshold_key]
+            if value is not None and value > 0:
+                # Don't spam logs during training - only log first time
+                return value
+        
+        # ==================== PER-EXERCISE LOOKUP ====================
+        # Find the exercise name from the key
+        exercise_name = None
+        for ex_name in sorted(ExerciseConfig.EXERCISE_CONFIG.keys(), key=len, reverse=True):
+            if threshold_key.startswith(ex_name):
+                exercise_name = ex_name
+                break
+        
+        if not exercise_name:
+            return default_value
+        
+        suffix = threshold_key[len(exercise_name):]  # e.g., "_right_up_ub" or "_up_ub"
+        
+        # Determine which position and bound we're looking for
+        target_position = None
+        target_bound = None
+        
+        for position in ['up', 'down']:
+            for bound in ['ub', 'lb', 'avg', 'std']:
+                if f"_{position}_{bound}" in suffix:
+                    target_position = position
+                    target_bound = bound
+                    break
+            if target_position:
+                break
+        
+        if not target_position or not target_bound:
+            return default_value
+        
+        # ==================== SIDE-SPECIFIC LOOKUP ====================
+        # If side is specified, look for that specific side's threshold
+        if side:
+            rom_key = f"{exercise_name}_{side}_{target_position}_{target_bound}"
+            if rom_key in s.patient_rom_limits:
+                value = s.patient_rom_limits[rom_key]
+                if value is not None and (target_bound == 'std' or value > 0):
+                    return value
+            # Fall through to default if side-specific not found
+            return default_value
+        
+        # ==================== FALLBACK: AGGREGATE BOTH SIDES ====================
+        # Collect values from both sides
+        values = {}
+        for s_name in ['right', 'left']:
+            rom_key = f"{exercise_name}_{s_name}_{target_position}_{target_bound}"
+            if rom_key in s.patient_rom_limits:
+                val = s.patient_rom_limits[rom_key]
+                if val is not None and (target_bound == 'std' or val > 0):
+                    values[s_name] = val
+        
+        if not values:
+            return default_value
+        
+        # Determine final value based on aggregation logic
+        if len(values) == 1:
+            return list(values.values())[0]
+        else:
+            # Both sides have data - aggregate based on bound type
+            if target_bound == 'lb':
+                return min(values.values())
+            elif target_bound == 'ub':
+                return max(values.values())
+            else:
+                return sum(values.values()) / len(values)
+    
+    def get_side_thresholds(self, exercise_name, up_lb, up_ub, down_lb, down_ub):
+        """
+        Get side-specific thresholds for an exercise.
+        
+        Returns a dict with thresholds for both sides:
+        {
+            'right': {'up_lb': x, 'up_ub': x, 'down_lb': x, 'down_ub': x},
+            'left': {'up_lb': x, 'up_ub': x, 'down_lb': x, 'down_ub': x}
+        }
+        """
+        thresholds = {}
+        
+        for side in ['right', 'left']:
+            thresholds[side] = {
+                'up_lb': self.get_dynamic_threshold(f"{exercise_name}_up_lb", up_lb, side=side),
+                'up_ub': self.get_dynamic_threshold(f"{exercise_name}_up_ub", up_ub, side=side),
+                'down_lb': self.get_dynamic_threshold(f"{exercise_name}_down_lb", down_lb, side=side),
+                'down_ub': self.get_dynamic_threshold(f"{exercise_name}_down_ub", down_ub, side=side),
+            }
+        
+        # Log only if we found personalized thresholds
+        has_rom_data = hasattr(s, 'patient_rom_limits') and s.patient_rom_limits
+        if has_rom_data:
+            has_rom = any(
+                f"{exercise_name}_{side}" in key 
+                for key in s.patient_rom_limits.keys() 
+                for side in ['right', 'left']
+            )
+            if has_rom:
+                print(f"[ROM] ✓ {exercise_name} using personalized thresholds:")
+                print(f"       RIGHT: UP[{thresholds['right']['up_lb']:.0f}°-{thresholds['right']['up_ub']:.0f}°] DOWN[{thresholds['right']['down_lb']:.0f}°-{thresholds['right']['down_ub']:.0f}°]")
+                print(f"       LEFT:  UP[{thresholds['left']['up_lb']:.0f}°-{thresholds['left']['up_ub']:.0f}°] DOWN[{thresholds['left']['down_lb']:.0f}°-{thresholds['left']['down_ub']:.0f}°]")
+            else:
+                print(f"[ROM] ⚠️ {exercise_name} - no ROM data found, using defaults")
+                print(f"       Keys searched for: {exercise_name}_right, {exercise_name}_left")
+                print(f"       Available keys: {list(s.patient_rom_limits.keys())[:5]}...")
+        else:
+            print(f"[ROM] ⚠️ {exercise_name} - s.patient_rom_limits is EMPTY! Using default thresholds")
+            print(f"       UP[{up_lb}°-{up_ub}°] DOWN[{down_lb}°-{down_ub}°]")
+        
+        return thresholds
+
+
+    def _record_rom_frame(self):
+        """
+        INTERNAL HELPER: Called inside exercise loops to capture frame data.
+        This "spies" on s.last_entry_angles while the exercise runs.
+        
+        UPDATED: Now uses ExerciseConfig for per-exercise thresholds.
+        Keys are now: {exercise_name}_{side} (e.g., "ball_bend_elbows_right")
+        """
+        if not s.is_rom_assessment_mode:
+            return
+            
+        if not self._rom_recording_active:
+            return
+        
+        exercise_name = s.req_exercise
+        exercise_config = ExerciseConfig.get_exercise_config(exercise_name)
+        
+        if not exercise_config:
+            return
+        
+        try:
+            # Debug: Print frame count every 50 frames
+            if not hasattr(self, '_rom_frame_count'):
+                self._rom_frame_count = 0
+            self._rom_frame_count += 1
+            
+            if self._rom_frame_count % 50 == 1:
+                print(f"[ROM DEBUG] Recording frame #{self._rom_frame_count} for '{exercise_name}'")
+                print(f"[ROM DEBUG]   s.last_entry_angles = {s.last_entry_angles}")
+            
+            # Iterate over all angle configs for this exercise
+            for angle_config in exercise_config["angles"]:
+                idx = angle_config["index"]
+                side = angle_config["side"]
+                
+                # Key format: {exercise_name}_{side} (e.g., "ball_bend_elbows_right")
+                key = f"{exercise_name}_{side}"
+                
+                if s.last_entry_angles and len(s.last_entry_angles) > idx:
+                    val = s.last_entry_angles[idx]
+                    if val is not None and not np.isnan(val) and val != 0:
+                        if key not in self.rom_recording_data:
+                            self.rom_recording_data[key] = []
+                            print(f"[ROM DEBUG] Created new recording buffer for '{key}'")
+                        
+                        self.rom_recording_data[key].append(val)
+                        
+                        # Debug: Print every 50th value added
+                        if len(self.rom_recording_data[key]) % 50 == 1:
+                            print(f"[ROM DEBUG]   {key}: recorded value #{len(self.rom_recording_data[key])} = {val:.2f}°")
+                            
+        except Exception as e:
+            print(f"[ROM ERROR] Error recording frame: {type(e).__name__}: {e}")
+
+
+
+    def finish_rom_assessment(self, exercise_name=None):
+        """
+        Process and save ROM assessment data.
+        
+        UPDATED: Now uses ExerciseConfig for per-exercise thresholds.
+        Keys format: {exercise_name}_{side}_{position}_{bound}
+        Example: "ball_bend_elbows_right_up_avg"
+        
+        Args:
+            exercise_name: The exercise name to process. If None, uses s.req_exercise.
+        """
+        print("\n" + "="*60)
+        print("[ROM] FINISHING ROM ASSESSMENT")
+        print("="*60)
+        
+        if not self.rom_recording_data:
+            print("[ROM] No data recorded!")
+            print(f"[ROM] rom_recording_data keys: {list(self.rom_recording_data.keys())}")
+            return
+        
+        patient_id = s.chosen_patient_ID
+        updates_to_save = {}
+        
+        # Use provided exercise_name or fall back to s.req_exercise
+        if exercise_name is None:
+            exercise_name = s.req_exercise
+        exercise_config = ExerciseConfig.get_exercise_config(exercise_name)
+        
+        print(f"[ROM] Processing exercise: {exercise_name}")
+        print(f"[ROM] Available data keys: {list(self.rom_recording_data.keys())}")
+        
+        if not exercise_config:
+            print(f"[ROM] No config found for exercise '{exercise_name}'")
+            return
+        
+        for angle_config in exercise_config["angles"]:
+            side = angle_config["side"]
+            data_key = f"{exercise_name}_{side}"  # e.g., "ball_bend_elbows_right"
+            
+            if data_key not in self.rom_recording_data:
+                print(f"[ROM] No data for '{data_key}'")
+                continue
+            
+            data_list = self.rom_recording_data[data_key]
+            print(f"[ROM] Processing '{data_key}': {len(data_list)} samples")
+            
+            if len(data_list) < 10:
+                print(f"[ROM] SKIPPED '{data_key}': Only {len(data_list)} samples (minimum 10 required)")
+                continue
+            
+            # Calculate ROM thresholds (returns dict with 'up' and 'down')
+            result = CalibrationLogic.calculate_rom_thresholds(data_list)
+            
+            # Save thresholds with per-exercise keys
+            # Format: {exercise_name}_{side}_{position}_{bound}
+            base_key = data_key  # e.g., "ball_bend_elbows_right"
+            
+            # UP position thresholds
+            updates_to_save[f"{base_key}_up_avg"] = result['up']['avg']
+            updates_to_save[f"{base_key}_up_std"] = result['up']['std']
+            updates_to_save[f"{base_key}_up_ub"] = result['up']['ub']
+            updates_to_save[f"{base_key}_up_lb"] = result['up']['lb']
+            
+            # DOWN position thresholds
+            updates_to_save[f"{base_key}_down_avg"] = result['down']['avg']
+            updates_to_save[f"{base_key}_down_std"] = result['down']['std']
+            updates_to_save[f"{base_key}_down_ub"] = result['down']['ub']
+            updates_to_save[f"{base_key}_down_lb"] = result['down']['lb']
+            
+            # Update in-memory for immediate use
+            if not hasattr(s, 'patient_rom_limits'):
+                s.patient_rom_limits = {}
+            
+            # Store all values in memory
+            for key, value in updates_to_save.items():
+                if base_key in key:
+                    s.patient_rom_limits[key] = value
+                    print(f"[ROM] Stored: s.patient_rom_limits['{key}'] = {value:.2f}")
+        
+        # Save to Excel
+        if updates_to_save:
+            print(f"\n[ROM] Saving {len(updates_to_save)} values to Excel...")
+            success = Excel.save_patient_rom(patient_id, updates_to_save)
+            if success:
+                print("[ROM] ✅ Data saved successfully!")
+            else:
+                print("[ROM] ❌ Failed to save data!")
+        else:
+            print("[ROM] No data to save.")
+        
+        print("="*60 + "\n")
+
+    
+
     def calc_angle_3d(self, joint1, joint2, joint3, joint_name="default"):
         a = np.array([joint1.x, joint1.y, joint1.z], dtype=np.float32)
         b = np.array([joint2.x, joint2.y, joint2.z], dtype=np.float32)
@@ -334,6 +666,65 @@ class Camera(threading.Thread):
 
 
 
+            # ==================== ROM TEST HANDLING ====================
+            # Handles active ROM measurement if the flag is ON and exercise has config
+            elif s.is_rom_assessment_mode and ExerciseConfig.get_exercise_config(s.req_exercise):
+                ex = s.req_exercise
+                exercise_config = ExerciseConfig.get_exercise_config(ex)
+                
+                print("=" * 70)
+                print(f"[ROM] ===== STARTING ROM TEST: {ex} =====")
+                print("=" * 70)
+                print(f"[ROM] Exercise config found: {exercise_config is not None}")
+                print(f"[ROM] Angles to record: {len(exercise_config['angles']) if exercise_config else 0}")
+                
+                # --- Standard Logic for Demo/Audio (Keep existing) ---
+                if ex != "hello_waving":
+                    s.max_repetitions_in_training += s.rep
+                    if self.first_coordination_ex:
+                        while not s.explanation_over or not s.gymmy_finished_demo:
+                            time.sleep(0.001)
+                        time.sleep(get_wav_duration(f'{s.rep}_times')+0.5)
+
+                print(f"[ROM] ROM Test '{ex}' recording started...")
+                print(f"[ROM] Number of repetitions: {s.rep}")
+                
+                # Reset recording buffers
+                self.rom_recording_data = {} 
+                self._rom_frame_count = 0  # Reset frame counter
+                self.joints = {}
+                self.previous_angles = {}
+                self.count_not_good_range = 0
+                
+                # Save exercise name BEFORE running (exercise clears s.req_exercise when done)
+                current_exercise_name = ex
+                
+                # --- Execute and Record ---
+                if hasattr(self, ex):
+                    print(f"[ROM] Activating recording... _rom_recording_active = True")
+                    self._rom_recording_active = True
+                    
+                    # This runs the FULL exercise loop. 
+                    # The `_record_rom_frame` hook inside the exercise functions will capture data.
+                    getattr(self, ex)()
+                    
+                    self._rom_recording_active = False
+                    print(f"[ROM] Deactivating recording... _rom_recording_active = False")
+                    print(f"[ROM] Total frames recorded: {self._rom_frame_count}")
+                else:
+                    print(f"[ROM] ERROR: Exercise method '{ex}' not found in Camera class!")
+                
+                # --- Save Data ---
+                # Pass exercise name explicitly since s.req_exercise may be cleared
+                print(f"[ROM] Calling finish_rom_assessment('{current_exercise_name}')...")
+                self.finish_rom_assessment(current_exercise_name)
+                
+                s.camera_done = True
+                s.req_exercise = ""
+                
+                print(f"[ROM] ===== ROM TEST '{current_exercise_name}' COMPLETE =====")
+            # ============================================================
+            
             elif s.req_exercise != "" and not s.req_exercise == "calibration":
                 ex = s.req_exercise
 
@@ -640,6 +1031,38 @@ class Camera(threading.Thread):
             s.change_in_trend = [False] * 4
             increasing_decreasing = [[-1] * 40 for _ in range(len(s.last_entry_angles))]
 
+            # ==================== PERSONALIZED ROM THRESHOLDS ====================
+            # Get SIDE-SPECIFIC thresholds based on patient ROM limits (if available)
+            # Each side (right/left) gets its own thresholds for accurate feedback
+            
+            # First angle - side-specific thresholds
+            thresholds = self.get_side_thresholds(exercise_name, up_lb, up_ub, down_lb, down_ub)
+            
+            # Right side thresholds
+            dyn_up_lb_right = thresholds['right']['up_lb']
+            dyn_up_ub_right = thresholds['right']['up_ub']
+            dyn_down_lb_right = thresholds['right']['down_lb']
+            dyn_down_ub_right = thresholds['right']['down_ub']
+            
+            # Left side thresholds
+            dyn_up_lb_left = thresholds['left']['up_lb']
+            dyn_up_ub_left = thresholds['left']['up_ub']
+            dyn_down_lb_left = thresholds['left']['down_lb']
+            dyn_down_ub_left = thresholds['left']['down_ub']
+            
+            # Backwards compatibility - aggregated thresholds for code that still uses them
+            dyn_up_lb = min(dyn_up_lb_right, dyn_up_lb_left)
+            dyn_up_ub = max(dyn_up_ub_right, dyn_up_ub_left)
+            dyn_down_lb = min(dyn_down_lb_right, dyn_down_lb_left)
+            dyn_down_ub = max(dyn_down_ub_right, dyn_down_ub_left)
+            
+            # Second angle thresholds (not side-specific yet - future improvement)
+            dyn_up_lb2 = self.get_dynamic_threshold(f"{exercise_name}_up_lb2", up_lb2)
+            dyn_up_ub2 = self.get_dynamic_threshold(f"{exercise_name}_up_ub2", up_ub2)
+            dyn_down_lb2 = self.get_dynamic_threshold(f"{exercise_name}_down_lb2", down_lb2)
+            dyn_down_ub2 = self.get_dynamic_threshold(f"{exercise_name}_down_ub2", down_ub2)
+            # =====================================================================
+
             while s.req_exercise == exercise_name:
                 while s.did_training_paused and not s.stop_requested:
                     time.sleep(0.01)
@@ -729,49 +1152,60 @@ class Camera(threading.Thread):
 
 
                     s.last_entry_angles = [right_angle, left_angle, right_angle2, left_angle2]
+                    # === הוספה חדשה: הקלטת הנתונים ===
+                    self._record_rom_frame()
+                    # =================================
 
-                    ##############################################################################
-                    print(str(joints[str("R_" + joint1)]))
-                    print(str(joints[str("R_" + joint2)]))
-                    print(str(joints[str("R_" + joint3)]))
-                    print(str(joints[str("R_" + joint4)]))
-                    print(str(joints[str("R_" + joint5)]))
-                    print(str(joints[str("R_" + joint6)]))
-                    print(str(joints[str("L_" + joint1)]))
-                    print(str(joints[str("L_" + joint2)]))
-                    print(str(joints[str("L_" + joint3)]))
-                    print(str(joints[str("L_" + joint4)]))
-                    print(str(joints[str("L_" + joint5)]))
-                    print(str(joints[str("L_" + joint6)]))
+                    # # Record angles for ROM assessment if we're in ROM test mode
+                    # # IMPORTANT: We read from s.last_entry_angles (not recalculate)
+                    # # to ensure calibration matches actual training exactly
+                    # if getattr(self, '_rom_recording_active', False) and self.current_rom_test is not None:
+                    #     angle_index = getattr(self, '_rom_angle_index', 0)
+                    #     self.record_rom_angle_from_last_entry(angle_index)
+
+                    # ##############################################################################
+                    # print(str(joints[str("R_" + joint1)]))
+                    # print(str(joints[str("R_" + joint2)]))
+                    # print(str(joints[str("R_" + joint3)]))
+                    # print(str(joints[str("R_" + joint4)]))
+                    # print(str(joints[str("R_" + joint5)]))
+                    # print(str(joints[str("R_" + joint6)]))
+                    # print(str(joints[str("L_" + joint1)]))
+                    # print(str(joints[str("L_" + joint2)]))
+                    # print(str(joints[str("L_" + joint3)]))
+                    # print(str(joints[str("L_" + joint4)]))
+                    # print(str(joints[str("L_" + joint5)]))
+                    # print(str(joints[str("L_" + joint6)]))
 
 
-                    print(left_angle, " ", right_angle)
-                    print(left_angle2, " ", right_angle2)
+                    # print(left_angle, " ", right_angle)
+                    # print(left_angle2, " ", right_angle2)
 
-                    list_first_angle.append(left_angle)
-                    list_second_angle.append(left_angle2)
+                    # list_first_angle.append(left_angle)
+                    # list_second_angle.append(left_angle2)
 
-                    ##############################################################################
+                    # ##############################################################################
 
-                    # if list_joints:
-                    #     previous_entry = list_joints[-1]
-                    #
+                    # # if list_joints:
+                    # #     previous_entry = list_joints[-1]
+                    # #
                     list_joints.append(copy.deepcopy(new_entry))
-                    #
-                    # self.tred_func(previous_entry, increasing_decreasing)
+                    # #
+                    # # self.tred_func(previous_entry, increasing_decreasing)
 
 
                     if right_angle is not None and left_angle is not None and \
                             right_angle2 is not None and left_angle2 is not None:
-                        print("first angle mean: ", np.nanmean(list_first_angle))
-                        print("first angle stdev: ", np.nanstd(list_first_angle))
-                        print("second angle mean: ", np.nanmean(list_second_angle))
-                        print("second angle stdev: ", np.nanstd(list_second_angle))
+                        # print("first angle mean: ", np.nanmean(list_first_angle))
+                        # print("first angle stdev: ", np.nanstd(list_first_angle))
+                        # print("second angle mean: ", np.nanmean(list_second_angle))
+                        # print("second angle stdev: ", np.nanstd(list_second_angle))
 
 
                         if left_right_differ:
-                            if (up_lb < right_angle < up_ub) and (down_lb < left_angle < down_ub) and \
-                                    (up_lb2 < right_angle2 < up_ub2) and (down_lb2 < left_angle2 < down_ub2) and (not flag):
+                            # Using dynamic thresholds for personalized ROM
+                            if (dyn_up_lb < right_angle < dyn_up_ub) and (dyn_down_lb < left_angle < dyn_down_ub) and \
+                                    (dyn_up_lb2 < right_angle2 < dyn_up_ub2) and (dyn_down_lb2 < left_angle2 < dyn_down_ub2) and (not flag):
 
                                     if s.reached_max_limit:
                                         flag = True
@@ -779,7 +1213,12 @@ class Camera(threading.Thread):
                                         s.number_of_repetitions_in_training += 1
                                         s.patient_repetitions_counting_in_exercise+=1
                                         print("counter:"+ str(counter))
-                                        s.all_rules_ok = True
+
+                                        # === ROM MODE: Suppress visual feedback ===
+                                        if not getattr(s, 'is_rom_assessment_mode', False):
+                                            s.all_rules_ok = True  # Only show green bar in regular training
+                                        # ==========================================
+
                                         self.count_not_good_range = 0
                                         s.time_of_change_position = time.time()
                                         s.not_reached_max_limit_rest_rules_ok = False
@@ -790,8 +1229,8 @@ class Camera(threading.Thread):
                                         s.not_reached_max_limit_rest_rules_ok = True
 
 
-                            elif (down_lb < right_angle < down_ub) and (up_lb < left_angle < up_ub) and \
-                                    (down_lb2 < right_angle2 < down_ub2) and (up_lb2 < left_angle2 < up_ub2) and (flag):
+                            elif (dyn_down_lb < right_angle < dyn_down_ub) and (dyn_up_lb < left_angle < dyn_up_ub) and \
+                                    (dyn_down_lb2 < right_angle2 < dyn_down_ub2) and (dyn_up_lb2 < left_angle2 < dyn_up_ub2) and (flag):
                                 flag = False
                                 s.all_rules_ok = False
                                 s.was_in_first_condition = True
@@ -801,16 +1240,30 @@ class Camera(threading.Thread):
                                 # increasing_decreasing = [[0] * 40 for _ in range(len(s.last_entry_angles))]
 
                             # elif time.time() - s.time_of_change_position > 3:
-                            #     if not s.reached_max_limit and (up_lb < right_angle < up_ub) and (down_lb < left_angle < down_ub) and \
-                            #         (up_lb2 < right_angle2 < up_ub2) and (down_lb2 < left_angle2 < down_ub2):
+                            #     if not s.reached_max_limit and (dyn_up_lb < right_angle < dyn_up_ub) and (dyn_down_lb < left_angle < dyn_down_ub) and \
+                            #         (dyn_up_lb2 < right_angle2 < dyn_up_ub2) and (dyn_down_lb2 < left_angle2 < dyn_down_ub2):
                             #         self.count_not_good_range += 1
                             #
                             #         if self.count_not_good_range >= 20:
                             #             s.try_again_calibration = True
 
                         else:
-                            if (up_lb < right_angle < up_ub) and (up_lb < left_angle < up_ub) and \
-                                    (up_lb2 < right_angle2 < up_ub2) and (up_lb2 < left_angle2 < up_ub2) and (not flag):
+                            # ==================== SIDE-SPECIFIC COMPARISON ====================
+                            # Using side-specific thresholds for accurate personalized feedback
+                            # Each side compared to its own ROM limits
+                            
+                            right_in_up = dyn_up_lb_right < right_angle < dyn_up_ub_right
+                            left_in_up = dyn_up_lb_left < left_angle < dyn_up_ub_left
+                            right_in_down = dyn_down_lb_right < right_angle < dyn_down_ub_right
+                            left_in_down = dyn_down_lb_left < left_angle < dyn_down_ub_left
+                            
+                            # Second angle uses aggregated thresholds (future: make side-specific too)
+                            right_angle2_in_up = dyn_up_lb2 < right_angle2 < dyn_up_ub2
+                            left_angle2_in_up = dyn_up_lb2 < left_angle2 < dyn_up_ub2
+                            right_angle2_in_down = dyn_down_lb2 < right_angle2 < dyn_down_ub2
+                            left_angle2_in_down = dyn_down_lb2 < left_angle2 < dyn_down_ub2
+                            
+                            if right_in_up and left_in_up and right_angle2_in_up and left_angle2_in_up and (not flag):
 
                                 if s.reached_max_limit:
                                     flag = True
@@ -818,17 +1271,19 @@ class Camera(threading.Thread):
                                     s.number_of_repetitions_in_training += 1
                                     s.patient_repetitions_counting_in_exercise+=1
                                     print("counter:" + str(counter))
+                                    # === ROM MODE: Suppress visual feedback ===
+                                    if not getattr(s, 'is_rom_assessment_mode', False):
+                                        s.all_rules_ok = True  # Only show green bar in regular training
+                                    # ==========================================
                                     s.time_of_change_position = time.time()
                                     self.count_not_good_range = 0
-                                    s.all_rules_ok = True
                                     s.not_reached_max_limit_rest_rules_ok = False
                                     # s.change_in_trend = [False] * 4
 
                                 else:
                                     s.not_reached_max_limit_rest_rules_ok = True
 
-                            elif (down_lb < right_angle < down_ub) and (down_lb < left_angle < down_ub) and \
-                                    (down_lb2 < right_angle2 < down_ub2) and (down_lb2 < left_angle2 < down_ub2) and (flag):
+                            elif right_in_down and left_in_down and right_angle2_in_down and left_angle2_in_down and (flag):
                                 flag = False
                                 s.all_rules_ok = False
                                 s.was_in_first_condition = True
@@ -837,8 +1292,8 @@ class Camera(threading.Thread):
                                 # s.change_in_trend = [False] * 4
 
                             # elif time.time() - s.time_of_change_position > 3:
-                            #     if not s.reached_max_limit and (up_lb < right_angle < up_ub) and (down_lb < left_angle < down_ub) and \
-                            #         (up_lb2 < right_angle2 < up_ub2) and (down_lb2 < left_angle2 < down_ub2):
+                            #     if not s.reached_max_limit and (dyn_up_lb < right_angle < dyn_up_ub) and (dyn_down_lb < left_angle < dyn_down_ub) and \
+                            #         (dyn_up_lb2 < right_angle2 < dyn_up_ub2) and (dyn_down_lb2 < left_angle2 < dyn_down_ub2):
                             #         self.count_not_good_range += 1
                             #
                             #         if self.count_not_good_range >= 20:
@@ -975,42 +1430,45 @@ class Camera(threading.Thread):
 
 
                     s.last_entry_angles = [right_angle, left_angle, right_angle2, left_angle2]
+                    # === הוספה חדשה: הקלטת הנתונים ===
+                    self._record_rom_frame()
+                    # =================================
 
-                    ##############################################################################
-                    print(str(joints[str("R_" + joint1)]))
-                    print(str(joints[str("R_" + joint2)]))
-                    print(str(joints[str("R_" + joint3)]))
-                    print(str(joints[str("R_" + joint4)]))
-                    print(str(joints[str("R_" + joint5)]))
-                    print(str(joints[str("R_" + joint6)]))
-                    print(str(joints[str("L_" + joint1)]))
-                    print(str(joints[str("L_" + joint2)]))
-                    print(str(joints[str("L_" + joint3)]))
-                    print(str(joints[str("L_" + joint4)]))
-                    print(str(joints[str("L_" + joint5)]))
-                    print(str(joints[str("L_" + joint6)]))
+                    # ##############################################################################
+                    # print(str(joints[str("R_" + joint1)]))
+                    # print(str(joints[str("R_" + joint2)]))
+                    # print(str(joints[str("R_" + joint3)]))
+                    # print(str(joints[str("R_" + joint4)]))
+                    # print(str(joints[str("R_" + joint5)]))
+                    # print(str(joints[str("R_" + joint6)]))
+                    # print(str(joints[str("L_" + joint1)]))
+                    # print(str(joints[str("L_" + joint2)]))
+                    # print(str(joints[str("L_" + joint3)]))
+                    # print(str(joints[str("L_" + joint4)]))
+                    # print(str(joints[str("L_" + joint5)]))
+                    # print(str(joints[str("L_" + joint6)]))
 
 
 
 
 
-                    print(left_angle, " ", right_angle)
-                    print(left_angle2, " ", right_angle2)
+                    # print(left_angle, " ", right_angle)
+                    # print(left_angle2, " ", right_angle2)
 
-                    list_first_angle.append(left_angle)
-                    list_second_angle.append(left_angle2)
+                    # list_first_angle.append(left_angle)
+                    # list_second_angle.append(left_angle2)
 
-                    ##############################################################################
+                    # ##############################################################################
 
                     list_joints.append(copy.deepcopy(new_entry))
 
-                    #print(str(i))
-                    if right_angle is not None and left_angle is not None and \
-                            right_angle2 is not None and left_angle2 is not None:
-                        print("first angle mean: ", np.nanmean(list_first_angle))
-                        print("first angle stdev: ", np.nanstd(list_first_angle))
-                        print("second angle mean: ", np.nanmean(list_second_angle))
-                        print("second angle stdev: ", np.nanstd(list_second_angle))
+                    # #print(str(i))
+                    # if right_angle is not None and left_angle is not None and \
+                    #         right_angle2 is not None and left_angle2 is not None:
+                        # print("first angle mean: ", np.nanmean(list_first_angle))
+                        # print("first angle stdev: ", np.nanstd(list_first_angle))
+                        # print("second angle mean: ", np.nanmean(list_second_angle))
+                        # print("second angle stdev: ", np.nanstd(list_second_angle))
 
 
 
@@ -1026,7 +1484,10 @@ class Camera(threading.Thread):
                             s.patient_repetitions_counting_in_exercise+=1
                             #self.change_count_screen(counter)
                             print("counter:" + str(counter))
-                            s.all_rules_ok = True
+                            # === ROM MODE: Suppress visual feedback ===
+                            if not getattr(s, 'is_rom_assessment_mode', False):
+                                s.all_rules_ok = True  # Only show green bar in regular training
+                            # ==========================================
                             s.time_of_change_position = time.time()
                             self.count_not_good_range = 0
                             s.not_reached_max_limit_rest_rules_ok = False
@@ -1203,20 +1664,23 @@ class Camera(threading.Thread):
 
 
                 s.last_entry_angles = [right_angle, left_angle, right_angle2, left_angle2]
+                # === הוספה חדשה: הקלטת הנתונים ===
+                self._record_rom_frame()
+                    # =================================
 
-                ##############################################################################
-                print(left_angle, " ", right_angle)
-                print(left_angle2, " ", right_angle2)
+                # ##############################################################################
+                # print(left_angle, " ", right_angle)
+                # print(left_angle2, " ", right_angle2)
 
-                list_first_angle += [left_angle]
-                list_second_angle += [left_angle2]
+                # list_first_angle += [left_angle]
+                # list_second_angle += [left_angle2]
 
-                print("left shoulder", joints["L_shoulder"].__str__())
-                print("right shoulder", joints["R_shoulder"].__str__())
-                print(str(abs(joints["L_shoulder"].x - joints["R_shoulder"].x)))
+                # print("left shoulder", joints["L_shoulder"].__str__())
+                # print("right shoulder", joints["R_shoulder"].__str__())
+                # print(str(abs(joints["L_shoulder"].x - joints["R_shoulder"].x)))
 
 
-                ##############################################################################
+                # ##############################################################################
 
 
                 #print(i)
@@ -1224,11 +1688,12 @@ class Camera(threading.Thread):
 
                 if right_angle is not None and left_angle is not None and \
                         right_angle2 is not None and left_angle2 is not None:
-                    print("first angle mean: ", np.nanmean(list_first_angle))
-                    print("first angle stdev: ", np.nanstd(list_first_angle))
-                    print("second angle mean: ", np.nanmean(list_second_angle))
-                    print("second angle stdev: ", np.nanstd(list_second_angle))
-                    print("distance between shoulders: "+str(abs(joints["L_shoulder"].x - joints["R_shoulder"].x)))
+                    # print("first angle mean: ", np.nanmean(list_first_angle))
+                    # print("first angle stdev: ", np.nanstd(list_first_angle))
+                    # print("second angle mean: ", np.nanmean(list_second_angle))
+                    # print("second angle stdev: ", np.nanstd(list_second_angle))
+                    # print("distance between shoulders: "+str(abs(joints["L_shoulder"].x - joints["R_shoulder"].x)))
+                    
                     if left_right_differ:
 
                         if wrist_check:
@@ -1246,7 +1711,10 @@ class Camera(threading.Thread):
                                             s.number_of_repetitions_in_training += 1
                                             s.patient_repetitions_counting_in_exercise += 1
                                             print("counter:" + str(counter))
-                                            s.all_rules_ok = True
+                                            # === ROM MODE: Suppress visual feedback ===
+                                            if not getattr(s, 'is_rom_assessment_mode', False):
+                                                s.all_rules_ok = True  # Only show green bar in regular training
+                                            # ==========================================
                                             s.time_of_change_position = time.time()
                                             self.count_not_good_range = 0
 
@@ -1267,9 +1735,11 @@ class Camera(threading.Thread):
                                             s.number_of_repetitions_in_training += 1
                                             s.patient_repetitions_counting_in_exercise += 1
                                             print("counter:" + str(counter))
-
+                                            # === ROM MODE: Suppress visual feedback ===
+                                            if not getattr(s, 'is_rom_assessment_mode', False):
+                                                s.all_rules_ok = True  # Only show green bar in regular training
+                                            # ==========================================
                                             flag = False
-                                            s.all_rules_ok = True
                                             s.time_of_change_position = time.time()
                                             self.count_not_good_range = 0
                                             s.not_reached_max_limit_rest_rules_ok = False
@@ -1302,7 +1772,10 @@ class Camera(threading.Thread):
                                     s.number_of_repetitions_in_training += 1
                                     s.patient_repetitions_counting_in_exercise += 1
                                     print("counter:" + str(counter))
-                                    s.all_rules_ok = True
+                                    # === ROM MODE: Suppress visual feedback ===
+                                    if not getattr(s, 'is_rom_assessment_mode', False):
+                                        s.all_rules_ok = True  # Only show green bar in regular training
+                                    # ==========================================
                                     s.time_of_change_position = time.time() + 3
                                     self.count_not_good_range = 0
 
@@ -1320,9 +1793,11 @@ class Camera(threading.Thread):
                                     s.number_of_repetitions_in_training += 1
                                     s.patient_repetitions_counting_in_exercise += 1
                                     print("counter:" + str(counter))
-
+                                    # === ROM MODE: Suppress visual feedback ===
+                                    if not getattr(s, 'is_rom_assessment_mode', False):
+                                        s.all_rules_ok = True  # Only show green bar in regular training
+                                    # ==========================================
                                     flag = False
-                                    s.all_rules_ok = True
                                     s.time_of_change_position = time.time() + 3
                                     self.count_not_good_range = 0
                                     s.not_reached_max_limit_rest_rules_ok = False
@@ -1353,8 +1828,10 @@ class Camera(threading.Thread):
                                 s.number_of_repetitions_in_training += 1
                                 s.patient_repetitions_counting_in_exercise += 1
                                 print("counter:" + str(counter))
-
-                                s.all_rules_ok = True
+                                # === ROM MODE: Suppress visual feedback ===
+                                if not getattr(s, 'is_rom_assessment_mode', False):
+                                    s.all_rules_ok = True  # Only show green bar in regular training
+                                # ==========================================
                                 s.time_of_change_position = time.time() + 2
                                 self.count_not_good_range = 0
                                 s.not_reached_max_limit_rest_rules_ok = False
@@ -1373,7 +1850,10 @@ class Camera(threading.Thread):
                                 print("counter:" + str(counter))
 
                                 flag = False
-                                s.all_rules_ok = True
+                                # === ROM MODE: Suppress visual feedback ===
+                                if not getattr(s, 'is_rom_assessment_mode', False):
+                                    s.all_rules_ok = True  # Only show green bar in regular training
+                                # ==========================================
                                 s.time_of_change_position = time.time() + 2
                                 self.count_not_good_range = 0
                                 s.not_reached_max_limit_rest_rules_ok = False
@@ -1576,13 +2056,17 @@ class Camera(threading.Thread):
 
                 s.last_entry_angles = [right_angle, left_angle, right_angle2, left_angle2, right_angle3, left_angle3]
 
+                # === הוספה חדשה: הקלטת הנתונים ===
+                self._record_rom_frame()
+                # =================================
 
-                ##############################################################################
-                print(left_angle, " ", right_angle)
-                print(left_angle2, " ", right_angle2)
-                print(left_angle3, " ", right_angle3)
-                print("#######################################")
-                ##############################################################################
+
+                # ##############################################################################
+                # print(left_angle, " ", right_angle)
+                # print(left_angle2, " ", right_angle2)
+                # print(left_angle3, " ", right_angle3)
+                # print("#######################################")
+                # ##############################################################################
 
 
                 # if list_joints:
@@ -1616,7 +2100,10 @@ class Camera(threading.Thread):
                                 s.number_of_repetitions_in_training += 1
                                 s.patient_repetitions_counting_in_exercise += 1
                                 print("counter:" + str(counter))
-                                s.all_rules_ok = True
+                                # === ROM MODE: Suppress visual feedback ===
+                                if not getattr(s, 'is_rom_assessment_mode', False):
+                                    s.all_rules_ok = True  # Only show green bar in regular training
+                                # ==========================================
                                 s.time_of_change_position = time.time()
                                 self.count_not_good_range = 0
                                 s.not_reached_max_limit_rest_rules_ok = False
@@ -1772,19 +2259,23 @@ class Camera(threading.Thread):
                         s.direction = "left"
 
 
+                # === הוספה חדשה: הקלטת הנתונים ===
+                    self._record_rom_frame()
+                    # =================================
+
                 list_joints.append(copy.deepcopy(new_entry))
 
 
-                ##############################################################################
-                print(left_angle, " ", right_angle)
-                print("second angle: ", left_angle_2, " ", right_angle_2)
+                # ##############################################################################
+                # print(left_angle, " ", right_angle)
+                # print("second angle: ", left_angle_2, " ", right_angle_2)
 
-                print("left wrist x: ", joints[str("R_wrist")].x)
-                print("right wrist x: ", joints[str("L_shoulder")].x)
-                print("nose: ", joints[str("nose")].y)
+                # print("left wrist x: ", joints[str("R_wrist")].x)
+                # print("right wrist x: ", joints[str("L_shoulder")].x)
+                # print("nose: ", joints[str("nose")].y)
 
 
-                ##############################################################################
+                # ##############################################################################
 
                 if side == 'right':
                     if right_angle is not None and right_angle_2 is not None:
@@ -1798,7 +2289,10 @@ class Camera(threading.Thread):
                                     s.patient_repetitions_counting_in_exercise += 1
                                     s.number_of_repetitions_in_training += 1
                                     print("counter:" + str(counter))
-                                    s.all_rules_ok = True
+                                    # === ROM MODE: Suppress visual feedback ===
+                                    if not getattr(s, 'is_rom_assessment_mode', False):
+                                        s.all_rules_ok = True  # Only show green bar in regular training
+                                    # ==========================================
                                     s.time_of_change_position = time.time()
                                     s.not_reached_max_limit_rest_rules_ok = False
 
@@ -1851,7 +2345,10 @@ class Camera(threading.Thread):
                                     s.number_of_repetitions_in_training += 1
                                     s.patient_repetitions_counting_in_exercise += 1
                                     print("counter:" + str(counter))
-                                    s.all_rules_ok = True
+                                    # === ROM MODE: Suppress visual feedback ===
+                                    if not getattr(s, 'is_rom_assessment_mode', False):
+                                        s.all_rules_ok = True  # Only show green bar in regular training
+                                    # ==========================================
                                     s.time_of_change_position = time.time()
                                     self.count_not_good_range = 0
                                     s.not_reached_max_limit_rest_rules_ok = False

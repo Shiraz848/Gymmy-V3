@@ -1,3 +1,75 @@
-audio files/Songs
-/__pycache__
-/logs
+# ===========================================
+# Gymmy Project - Git Ignore File
+# ===========================================
+
+# ============ PATIENT DATA (PRIVATE) ============
+# Do NOT upload patient data to GitHub!
+Patients/
+Pilot_Data/
+
+# ============ EXCEL DATA FILES ============
+Patients.xlsx
+Physiotherapists.xlsx
+~$*.xlsx
+
+# ============ GENERATED OUTPUTS ============
+Report_Diagrams/
+*.pdf
+
+# ============ PYTHON ============
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============ VIRTUAL ENVIRONMENTS ============
+venv/
+ENV/
+env/
+.venv/
+
+# ============ IDE ============
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cursor/
+
+# ============ OS FILES ============
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============ LOGS ============
+*.log
+logs/
+
+# ============ TEMPORARY FILES ============
+*.tmp
+*.temp
+*.bak
+
+# ============ AUDIO/VIDEO CACHE ============
+# Keep audio files but ignore any cache
+*.wav.tmp
+
+# ============ ZED CAMERA ============
+*.svo
+*.svo2

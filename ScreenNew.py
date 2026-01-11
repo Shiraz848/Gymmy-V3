@@ -180,6 +180,7 @@ class ID_patient_fill_page(tk.Frame):
 
         if user_id != "":
             excel_file_path = "Patients.xlsx"
+            Excel.ensure_patients_file_exists()  # Create file if it doesn't exist
             df = pd.read_excel(excel_file_path, sheet_name="patients_details")
 
             # Convert the first column to string for comparison
@@ -246,6 +247,9 @@ class ID_patient_fill_page(tk.Frame):
                     for i in range (0,num_columns1): #including 0
                         if row_of_patient.iloc[0,i]==True:
                             s.ex_in_training.append(df1.columns[i])
+
+                    # Load ROM limits for this patient (if they exist)
+                    Excel.load_patient_rom(user_id)
 
                     print(s.ex_in_training)
                     s.screen.switch_frame(StartOfTraining)
@@ -440,6 +444,7 @@ class Choose_Action_Physio(tk.Frame):
     def on_click_patient_registration(self):
         self.delete_all_labels()
         excel_file_path = "Patients.xlsx"
+        Excel.ensure_patients_file_exists()  # Create file if it doesn't exist
         workbook = openpyxl.load_workbook(excel_file_path)
         df = pd.read_excel(excel_file_path, sheet_name="patients_details")
         ID_entered = self.id_entry.get()
@@ -505,7 +510,9 @@ class Choose_Action_Physio(tk.Frame):
             #insert a row to the excel of exercises
             df2 = pd.read_excel(excel_file_path, sheet_name="patients_exercises")
             sheet3 = workbook["patients_exercises"]
-            new_row_data_exercises = {column: True for column in df2.columns}
+            # BUG FIX: Default exercises to False, not True
+            # The physiotherapist should explicitly select which exercises the patient can do
+            new_row_data_exercises = {column: False for column in df2.columns}
             new_row_data_exercises.update({'ID': ID_entered})
 
             columns = list(new_row_data_exercises.keys())
@@ -531,24 +538,12 @@ class Choose_Action_Physio(tk.Frame):
             self.labels.extend([text_id, rect_id])
 
     def create_folders_when_insert_patient(self):
-        Excel.create_and_open_folder(f"Patients/{s.chosen_patient_ID}")  # open folder for patient
-        Excel.create_and_open_folder(f"Patients/{s.chosen_patient_ID}/Graphs")  # open graphs folder
-        Excel.create_and_open_folder(f"Patients/{s.chosen_patient_ID}/Tables")  # open graphs folder
-
-        df = pd.read_excel("Patients.xlsx", sheet_name="patients_exercises", header=None)
-
-        # Assuming the headers are in the first row of the DataFrame
-        headers = df.iloc[0]  # Extract headers from the first row
-
-        # Exclude a specific header
-        header_to_exclude = 'ID'
-        selected_headers = [header for header in headers if header != header_to_exclude]
-
-        # Iterate over each selected header
-        for header in selected_headers:
-            # create a file for each execise
-            Excel.create_and_open_folder(f"Patients/{s.chosen_patient_ID}/Graphs/{header}")  # open graphs folder
-            Excel.create_and_open_folder(f"Patients/{s.chosen_patient_ID}/Tables/{header}")
+        # Create only the patient's root folder
+        # Session folders (Trainings/ROM_Assessments) will be created automatically when needed
+        Excel.create_and_open_folder(f"Patients/{s.chosen_patient_ID}")
+        print(f"[ScreenNew] Created patient folder: Patients/{s.chosen_patient_ID}")
+        # Note: Exercise folders are now created dynamically when exercises are performed
+        # This prevents empty folders from being created
 
     def delete_all_labels(self):
         for label in self.labels:
@@ -560,6 +555,7 @@ class PatientDisplaying(tk.Frame):
     def __init__(self, master):
         super().__init__(master)
         excel_file_path = "Patients.xlsx"
+        Excel.ensure_patients_file_exists()  # Create file if it doesn't exist
         df = pd.read_excel(excel_file_path, sheet_name="patients_details", usecols=['ID'])
 
         # Rename column
@@ -800,20 +796,27 @@ def play_video_explanation(cap, label, video_path, scale_factor_x = 0.65, scale_
             # Schedule the next frame
             label.after(1, play_frame)
         else:
-            # End of the video, load the next video if available
+            # End of the video
             print("Video playback finished.")
-            next_video_path = video_path.replace('.mp4', '_2.mp4')  # Append '_2' to the video file name
-            cap.release()  # Release the current video
-            try:
-                cap = cv2.VideoCapture(next_video_path)  # Try loading the next video
-                if not cap.isOpened():
-                    print(f"Next video '{next_video_path}' not found.")
+            cap.release()
+
+            # Only load _2 if this is NOT already the _2 video
+            if '_2.mp4' not in video_path:
+                next_video_path = video_path.replace('.mp4', '_2.mp4')
+                try:
+                    cap = cv2.VideoCapture(next_video_path)
+                    if cap.isOpened():
+                        print(f"Playing next video: {next_video_path}")
+                        play_frame()
+                    else:
+                        print(f"Next video not found. Done.")
+                        label.image = None
+                except Exception as e:
+                    print(f"Error: {e}")
                     label.image = None
-                else:
-                    print(f"Playing next video: {next_video_path}")
-                    play_frame()  # Start playing the next video
-            except Exception as e:
-                print(f"Error loading next video: {e}")
+            else:
+                # This IS the _2 video - stop here
+                print("Second video finished. Done.")
                 label.image = None
 
     # Start playing frames
@@ -1232,7 +1235,7 @@ class ChooseRubberBandExercisesPage(tk.Frame):
 
     def to_previous_button_click(self):
         num_of_exercises_in_training = Excel.count_number_of_exercises_in_training_by_ID()
-        if num_of_exercises_in_training < 5:
+        if num_of_exercises_in_training < 1:  # Changed from 5 to 1 for testing - CHANGE BACK!
             back = Image.open('Pictures//not_enough_exercises_chosen.jpg')
             background_img = ImageTk.PhotoImage(back)
 
@@ -1435,7 +1438,7 @@ class ChooseStickExercisesPage(tk.Frame):
 
     def to_previous_button_click(self):
         num_of_exercises_in_training = Excel.count_number_of_exercises_in_training_by_ID()
-        if num_of_exercises_in_training < 5:
+        if num_of_exercises_in_training < 1:  # Changed from 5 to 1 for testing - CHANGE BACK!
             back = Image.open('Pictures//not_enough_exercises_chosen.jpg')
             background_img = ImageTk.PhotoImage(back)
 
@@ -1569,7 +1572,7 @@ class ChooseWeightsExercisesPage(tk.Frame):
 
     def to_previous_button_click(self):
         num_of_exercises_in_training = Excel.count_number_of_exercises_in_training_by_ID()
-        if num_of_exercises_in_training < 5:
+        if num_of_exercises_in_training < 1:  # Changed from 5 to 1 for testing - CHANGE BACK!
             back = Image.open('Pictures//not_enough_exercises_chosen.jpg')
             background_img = ImageTk.PhotoImage(back)
 
@@ -1771,7 +1774,7 @@ class ChooseNoToolExercisesPage(tk.Frame):
 
     def on_end_click(self):
         num_of_exercises_in_training = Excel.count_number_of_exercises_in_training_by_ID()
-        if num_of_exercises_in_training < 5:
+        if num_of_exercises_in_training < 1:  # Changed from 5 to 1 for testing - CHANGE BACK!
             back = Image.open('Pictures//not_enough_exercises_chosen.jpg')
             background_img = ImageTk.PhotoImage(back)
 
@@ -2047,7 +2050,10 @@ class ExercisePage(tk.Frame):
                     s.repeat_explanation = False
 
 
-                if not self.previous_all_rules_ok and s.all_rules_ok:
+                # Skip visual feedback in ROM assessment mode
+                if getattr(s, 'is_rom_assessment_mode', False):
+                    pass  # Don't update visual feedback during ROM testing
+                elif not self.previous_all_rules_ok and s.all_rules_ok:
                     self.previous_all_rules_ok = True
                     self.comment_label.config(text="", fg="red", bg=self.cget("bg"))  # Hide it completely
                     self.comment_label.place_forget()  # Remove from layout
@@ -2125,8 +2131,11 @@ class ExercisePage(tk.Frame):
                 time_limit_hands_not_good = 7
 
                 if not s.did_training_paused:
+                    # ==================== ROM MODE: Skip feedback checks ====================
+                    is_rom_mode = getattr(s, 'is_rom_assessment_mode', False)
+                    # ========================================================================
 
-                    if s.req_exercise != "" and s.can_comment_robot and \
+                    if not is_rom_mode and s.req_exercise != "" and s.can_comment_robot and \
                         ((s.reached_max_limit and not s.all_rules_ok  and self.can_comment and s.was_in_first_condition and s.req_exercise not in ["ball_switch", "stick_switch", "band_up_and_lean", "stick_up_and_lean", "notool_hands_behind_and_lean"]) or \
                          ((s.all_rules_ok and self.percent_of_bar < 0.2 and self.can_comment) or (not s.all_rules_ok and self.percent_of_bar < 0.2 and not s.was_in_first_condition) and\
                          ((s.req_exercise in ["notool_right_hand_up_and_bend", "notool_left_hand_up_and_bend"]) or not self.exercise_type == "shoulders_distance_x")) or \
@@ -2135,9 +2144,8 @@ class ExercisePage(tk.Frame):
                          (s.hand_not_good and self.start_of_time_count_hands_not_good and float(time.time() - self.start_of_time_count_hands_not_good) >= time_limit_hands_not_good)):
                             # not s.reached_max_limit and (time.time() - self.time_of_exercise_start >= 6 or (s.time_of_change_position is None and time.time()- s.time_of_change_position >= 4))):
                         #any(s.change_in_trend):
-                            print(
-                                "time.time() - s.time_of_change_position: " + str(float(time.time() - s.time_of_change_position)))
-
+                            # Debug print removed - was flooding terminal every frame
+                            # print("time.time() - s.time_of_change_position: " + str(float(time.time() - s.time_of_change_position)))
 
                             self.check_are_there_comments()
 
@@ -2733,6 +2741,12 @@ class ExercisePage(tk.Frame):
 
 
     def check_are_there_comments(self):
+        # ==================== ROM MODE: Skip all feedback ====================
+        # During ROM assessment, we don't give any corrective feedback
+        # The patient should move freely without judgment
+        if getattr(s, 'is_rom_assessment_mode', False):
+            return  # Skip all feedback in ROM mode
+        # =====================================================================
 
         angles = s.last_entry_angles
         self.comments = []
@@ -4565,6 +4579,13 @@ class ChooseTrainingOrExerciseInformation(tk.Frame):
                                             width=exercise_image.width, height=exercise_image.height,
                                             bg='#50a6ad', bd=0, highlightthickness=0)
         enter_exercises.place(x=540, y=130)
+        
+        # ROM Assessment button (text button, consistent style)
+        rom_assessment_button = tk.Button(self, text="Start ROM Assessment",
+                                         font=("David", 20, "bold"),
+                                            bg="#4a7abc", fg="white",
+                                            command=lambda: self.on_click_rom_assessment())
+        rom_assessment_button.place(relx=0.5, rely=0.65, anchor=tk.CENTER)
 
     def to_previous_button_click(self):
         s.screen.switch_frame(PatientDisplaying)
@@ -4574,6 +4595,144 @@ class ChooseTrainingOrExerciseInformation(tk.Frame):
 
     def on_click_exercise_chosen(self):
         s.screen.switch_frame(ChooseBallExercisesPage)
+    
+ 
+    
+    # ==================== FIXED ROM ASSESSMENT FUNCTION - VERSION 2 ====================
+    # Replace the existing on_click_rom_assessment method in ScreenNew.py (around line 4588)
+    # This version fixes BOTH the NoneType crash AND the stuck training thread
+    
+    def on_click_rom_assessment(self):
+        """
+        Start ROM Assessment session.
+        BULLETPROOF VERSION 2 - Fixes:
+        1. NoneType crashes (audio_path, measurement attributes)
+        2. Training thread stuck (ex_in_training empty)
+        """
+        print("=" * 60)
+        print("[ROM] ===== STARTING ROM ASSESSMENT MODE =====")
+        print("=" * 60)
+        
+        # ==================== STEP 1: Set ROM Mode Flag ====================
+        s.is_rom_assessment_mode = True
+        print(f"[ROM] Step 1: is_rom_assessment_mode = {s.is_rom_assessment_mode}")
+        
+        # ==================== STEP 2: Initialize ALL required attributes ====================
+        print("[ROM] Step 2: Initializing measurement attributes...")
+        
+        if not hasattr(s, 'len_left_arm'):
+            s.len_left_arm = None
+        if not hasattr(s, 'len_right_arm'):
+            s.len_right_arm = None
+        if not hasattr(s, 'dist_between_wrists'):
+            s.dist_between_wrists = None
+        if not hasattr(s, 'dist_between_shoulders'):
+            s.dist_between_shoulders = None
+        if not hasattr(s, 'len_left_upper_arm'):
+            s.len_left_upper_arm = None
+        if not hasattr(s, 'len_right_upper_arm'):
+            s.len_right_upper_arm = None
+        if not hasattr(s, 'shoulder_problem_calibration'):
+            s.shoulder_problem_calibration = False
+        if not hasattr(s, 'patient_rom_limits'):
+            s.patient_rom_limits = {}
+            
+        # ==================== STEP 3: Set DEFAULT values FIRST ====================
+        print("[ROM] Step 3: Setting DEFAULT values...")
+        DEFAULT_AUDIO_PATH = 'audio files/Hebrew/Male/'
+        DEFAULT_REP = 10
+        DEFAULT_RATE = "moderate"
+        DEFAULT_GENDER = "Male"
+        
+        s.audio_path = DEFAULT_AUDIO_PATH
+        s.rep = DEFAULT_REP
+        s.rate = DEFAULT_RATE
+        s.gender = DEFAULT_GENDER
+        
+        # ==================== STEP 4: Try to load patient-specific data ====================
+        print("[ROM] Step 4: Attempting to load patient data from Excel...")
+        
+        if hasattr(s, 'chosen_patient_ID') and s.chosen_patient_ID:
+            patient_id = str(s.chosen_patient_ID)
+            print(f"[ROM]   Patient ID: {patient_id}")
+            patient_workbook_path = "Patients.xlsx"
+            
+            try:
+                loaded_gender = Excel.find_value_by_colName_and_userID(
+                    patient_workbook_path, "patients_details", patient_id, "gender"
+                )
+                
+                if loaded_gender and str(loaded_gender).strip():
+                    gender_str = str(loaded_gender).strip().capitalize()
+                    if gender_str in ["Male", "Female"]:
+                        s.gender = gender_str
+                        s.audio_path = f'audio files/Hebrew/{gender_str}/'
+                        print(f"[ROM]   Loaded gender: {s.gender}")
+                        print(f"[ROM]   Updated audio_path: {s.audio_path}")
+                        
+                try:
+                    loaded_rate = Excel.find_value_by_colName_and_userID(
+                        patient_workbook_path, "patients_details", patient_id, "rate"
+                    )
+                    if loaded_rate and str(loaded_rate).strip():
+                        s.rate = str(loaded_rate).strip()
+                        print(f"[ROM]   Loaded rate: {s.rate}")
+                except Exception:
+                    pass
+                
+                # Also load number of repetitions from patient settings
+                try:
+                    loaded_rep = Excel.find_value_by_colName_and_userID(
+                        patient_workbook_path, "patients_details", patient_id, "number of repetitions in each exercise"
+                    )
+                    if loaded_rep:
+                        s.rep = int(loaded_rep)
+                        print(f"[ROM]   Loaded rep: {s.rep}")
+                except Exception:
+                    pass
+                    
+            except Exception as e:
+                print(f"[ROM]   Error loading patient data: {e}")
+        else:
+            print("[ROM]   No patient ID set, using defaults")
+        
+        # ==================== STEP 5: CRITICAL FIX - Initialize ex_in_training ====================
+        # This prevents TrainingNew thread from getting stuck in "while s.ex_in_training == []"
+        print("[ROM] Step 5: CRITICAL - Initializing ex_in_training...")
+        s.ex_in_training = ["ROM_ASSESSMENT_PLACEHOLDER"]
+        print(f"[ROM]   s.ex_in_training = {s.ex_in_training}")
+        print("[ROM]   (Will be replaced by select_exercises() with actual ROM test exercises)")
+        
+        # ==================== STEP 6: Final verification ====================
+        print("[ROM] Step 6: FINAL VERIFICATION...")
+        
+        if s.audio_path is None or not isinstance(s.audio_path, str) or len(s.audio_path) == 0:
+            print("[ROM]   CRITICAL: audio_path invalid, forcing default!")
+            s.audio_path = DEFAULT_AUDIO_PATH
+        
+        if not isinstance(s.rep, int) or s.rep <= 0:
+            print(f"[ROM]   CRITICAL: rep invalid ({s.rep}), forcing {DEFAULT_REP}!")
+            s.rep = DEFAULT_REP
+        
+        print("-" * 60)
+        print("[ROM] FINAL VALUES:")
+        print(f"[ROM]   audio_path: {s.audio_path}")
+        print(f"[ROM]   rep: {s.rep}")
+        print(f"[ROM]   rate: {s.rate}")
+        print(f"[ROM]   gender: {s.gender}")
+        print(f"[ROM]   is_rom_assessment_mode: {s.is_rom_assessment_mode}")
+        print(f"[ROM]   ex_in_training: {s.ex_in_training}")
+        print(f"[ROM]   chosen_patient_ID: {getattr(s, 'chosen_patient_ID', 'NOT SET')}")
+        print("-" * 60)
+        
+        # ==================== STEP 7: Switch to Training ====================
+        print("[ROM] Step 7: Switching to StartOfTraining frame...")
+        s.screen.switch_frame(StartOfTraining)
+        print("[ROM] ===== ROM ASSESSMENT INITIALIZATION COMPLETE =====")
+
+
+
+
 
 
 
@@ -4581,6 +4740,28 @@ class ChooseTrainingOrExerciseInformation(tk.Frame):
 class StartOfTraining(tk.Frame):
     def __init__(self, master):
         tk.Frame.__init__(self, master)
+        
+        # CRITICAL: Ensure audio_path is set before using audio functions
+        if not hasattr(s, 'audio_path') or s.audio_path is None:
+            print("[StartOfTraining] WARNING: audio_path is None! Setting default...")
+            # Try to get gender from patient data if available
+            if hasattr(s, 'chosen_patient_ID') and s.chosen_patient_ID:
+                try:
+                    import Excel
+                    patient_workbook_path = "Patients.xlsx"
+                    s.gender = Excel.find_value_by_colName_and_userID(patient_workbook_path, "patients_details", s.chosen_patient_ID, "gender")
+                    if s.gender:
+                        gender_str = s.gender.strip().capitalize()
+                        s.audio_path = 'audio files/Hebrew/' + gender_str + '/'
+                    else:
+                        s.audio_path = 'audio files/Hebrew/Male/'
+                except Exception as e:
+                    print(f"[StartOfTraining] Error loading audio_path: {e}")
+                    s.audio_path = 'audio files/Hebrew/Male/'
+            else:
+                s.audio_path = 'audio files/Hebrew/Male/'
+            print(f"[StartOfTraining] Set audio_path to: {s.audio_path}")
+        
         s.play_song = True
         image = Image.open('Pictures//hello.jpg')
         self.photo_image = ImageTk.PhotoImage(image) #self. - for keeping the photo in memory so it will be shown

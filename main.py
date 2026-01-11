@@ -21,10 +21,22 @@ if __name__ == '__main__':
     s.weights_exercises_number = 2
     s.no_tool_exercises_number = 6
 
-    # s.len_left_arm = None
-    # s.len_right_arm = None
-    # s.dist_between_wrists = None
+
+    # ==================== CRITICAL FIX: Initialize ALL measurement attributes ====================
+    # These MUST be initialized to None (not commented out) to prevent AttributeError crashes
+    s.len_left_arm = None
+    s.len_right_arm = None
+    s.dist_between_wrists = None
     s.dist_between_shoulders = None
+    s.len_left_upper_arm = None
+    s.len_right_upper_arm = None
+    # =============================================================================================
+
+    # ==================== ROM Assessment Mode Initialization ====================
+    s.is_rom_assessment_mode = False
+    s.patient_rom_limits = {}
+    # ============================================================================
+
 
     s.screen_finished_counting = False
     s.finished_calibration = False

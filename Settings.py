@@ -67,5 +67,12 @@ def __init__():
 
     global reached_max_limit
 
-
+    # Personalized ROM (Range of Motion) limits for patient-specific thresholds
+    # Structure: { 'joint_name': max_angle_value, ... }
+    # Example: { 'shoulder_flexion_right': 140, 'elbow_flexion_right': 110, ... }
+    global patient_rom_limits
+    patient_rom_limits = {}
+    
+    # ROM Assessment Mode: When True, training will use fixed ROM test exercises instead of random selection
+    global is_rom_assessment_mode
 

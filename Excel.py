@@ -12,6 +12,80 @@ import numpy as np
 import os
 
 
+PATIENTS_FILE = "Patients.xlsx"
+
+
+def ensure_patients_file_exists():
+    """
+    Creates the Patients.xlsx file with required sheets if it doesn't exist.
+    This ensures the system works even on first run.
+    Structure matches the existing Patients.xlsx template exactly.
+    """
+    if os.path.exists(PATIENTS_FILE):
+        return True  # File already exists
+    
+    print(f"Creating {PATIENTS_FILE}...")
+    
+    try:
+        # Create a new workbook
+        workbook = openpyxl.Workbook()
+        
+        # Remove default sheet
+        default_sheet = workbook.active
+        workbook.remove(default_sheet)
+        
+        # Create patients_details sheet (exact match to template)
+        details_sheet = workbook.create_sheet("patients_details")
+        details_headers = [
+            "ID", "gender", "number of exercises", 
+            "number of repetitions in each exercise", "rate"
+        ]
+        for col, header in enumerate(details_headers, 1):
+            details_sheet.cell(row=1, column=col, value=header)
+        
+        # Create patients_history_of_trainings sheet
+        history_sheet = workbook.create_sheet("patients_history_of_trainings")
+        history_sheet.cell(row=1, column=1, value="ID")
+        
+        # Create patients_exercises sheet (exact match to template)
+        exercises_sheet = workbook.create_sheet("patients_exercises")
+        exercises_headers = [
+            "ID",
+            "ball_bend_elbows",
+            "ball_raise_arms_above_head",
+            "ball_switch",
+            "ball_open_arms_and_forward",
+            # NOTE: ball_open_arms_above_head removed - no UI checkbox and no Gymmy implementation
+            "band_open_arms",
+            "band_open_arms_and_up",
+            "band_up_and_lean",
+            "band_straighten_left_arm_elbows_bend_to_sides",
+            "band_straighten_right_arm_elbows_bend_to_sides",
+            "stick_bend_elbows",
+            "stick_bend_elbows_and_up",
+            "stick_raise_arms_above_head",
+            "stick_switch",
+            "stick_up_and_lean",
+            "weights_open_arms_and_forward",
+            "weights_abduction",
+            "notool_hands_behind_and_lean",
+            "notool_right_hand_up_and_bend",
+            "notool_left_hand_up_and_bend",
+            "notool_raising_hands_diagonally",
+            "notool_right_bend_left_up_from_side",
+            "notool_left_bend_right_up_from_side"
+        ]
+        for col, header in enumerate(exercises_headers, 1):
+            exercises_sheet.cell(row=1, column=col, value=header)
+        
+        # Save the workbook
+        workbook.save(PATIENTS_FILE)
+        print(f"{PATIENTS_FILE} created successfully with all required sheets!")
+        return True
+        
+    except Exception as e:
+        print(f"Error creating {PATIENTS_FILE}: {e}")
+        return False
 
 
 def create_and_open_folder(folder_path):
@@ -28,16 +102,39 @@ def create_and_open_folder(folder_path):
         print(f"An error occurred: {e}")
 
 
+# #creats a new workbook to each training
+# def create_workbook_for_training():
+#     datetime_string = datetime.now().strftime("%d-%m-%Y %H-%M-%S")
+#     workbook_name = f"Patients/{s.chosen_patient_ID}/{datetime_string}.xlsx"
+#     s.training_workbook_path = workbook_name
+#     s.training_workbook = openpyxl.Workbook()  # Do not pass the filename here
+#     s.training_workbook.save(s.training_workbook_path)  # Save the workbook after creating it
 
 
-#creats a new workbook to each training
 def create_workbook_for_training():
-    datetime_string = datetime.now().strftime("%d-%m-%Y %H-%M-%S")
-    workbook_name = f"Patients/{s.chosen_patient_ID}/{datetime_string}.xlsx"
+    # Use ISO format for better sorting: YYYY-MM-DD_HH-MM-SS
+    datetime_string = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    
+    # Determine folder based on session type
+    if getattr(s, 'is_rom_assessment_mode', False):
+        # ROM Assessment - save in ROM_Assessments/datetime/ folder
+        session_folder = f"Patients/{s.chosen_patient_ID}/ROM_Assessments/{datetime_string}"
+        os.makedirs(session_folder, exist_ok=True)
+        workbook_name = f"{session_folder}/Calibration_Data.xlsx"
+        print(f"[Excel] Creating ROM session folder: {session_folder}")
+    else:
+        # Regular Training - save in Trainings/datetime/ folder
+        session_folder = f"Patients/{s.chosen_patient_ID}/Trainings/{datetime_string}"
+        os.makedirs(session_folder, exist_ok=True)
+        workbook_name = f"{session_folder}/Session_Data.xlsx"
+        print(f"[Excel] Creating Training session folder: {session_folder}")
+    
+    # Store session folder path for use by graph/table functions
+    s.current_session_folder = session_folder
+    
     s.training_workbook_path = workbook_name
-    s.training_workbook = openpyxl.Workbook()  # Do not pass the filename here
-    s.training_workbook.save(s.training_workbook_path)  # Save the workbook after creating it
-
+    s.training_workbook = openpyxl.Workbook()
+    s.training_workbook.save(s.training_workbook_path)
 
 
 
@@ -349,6 +446,19 @@ def three_angles_graph_and_table(exercise_name, list_joints):
 
 
 def create_and_save_graph(data, exercise):
+    # Get session folder (created by create_workbook_for_training)
+    session_folder = getattr(s, 'current_session_folder', None)
+    
+    if session_folder is None:
+        # Fallback to old behavior if session_folder not set
+        timestamp = s.starts_and_ends_of_stops[0]
+        start_dt = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d_%H-%M-%S")
+        session_folder = f"Patients/{s.chosen_patient_ID}/Trainings/{start_dt}"
+    
+    # Create exercise folder inside session folder (only when needed!)
+    exercise_folder = f"{session_folder}/{exercise}"
+    os.makedirs(exercise_folder, exist_ok=True)
+    
     # Iterate over each plot data
     for plot_name, plot_data in data.items():
         # Create a new plot
@@ -359,10 +469,7 @@ def create_and_save_graph(data, exercise):
         # Check if all values in y_series are NaN or empty
         if y_series.isnull().all() or y_series.count() < 10:
             # Save a "null graph"
-            timestamp = s.starts_and_ends_of_stops[0]
-            start_dt = datetime.fromtimestamp(timestamp).strftime("%d-%m-%Y %H-%M-%S")
-            create_and_open_folder(f'Patients/{s.chosen_patient_ID}/Graphs/{exercise}/{start_dt}')
-            plot_filename = f'Patients/{s.chosen_patient_ID}/Graphs/{exercise}/{start_dt}/{plot_name}.jpeg'
+            plot_filename = f'{exercise_folder}/{plot_name}.jpeg'
 
             # Create a "null graph"
             plt.figure()
@@ -397,12 +504,11 @@ def create_and_save_graph(data, exercise):
         plt.title(plot_name[:-2], fontsize=16, weight="bold", y=1)
 
         # Save the plot as an image file
-        timestamp = s.starts_and_ends_of_stops[0]
-        start_dt = datetime.fromtimestamp(timestamp).strftime("%d-%m-%Y %H-%M-%S")
-        create_and_open_folder(f'Patients/{s.chosen_patient_ID}/Graphs/{exercise}/{start_dt}')
-        plot_filename = f'Patients/{s.chosen_patient_ID}/Graphs/{exercise}/{start_dt}/{plot_name}.jpeg'
+        plot_filename = f'{exercise_folder}/{plot_name}.jpeg'
         plt.savefig(plot_filename, dpi=100)
         plt.close()  # Close the plot to clear the figure
+    
+    print(f"[Excel] Saved graphs to: {exercise_folder}")
 
 
 def success_worksheet():
@@ -583,17 +689,23 @@ def count_number_of_exercises_in_training_by_ID():
 
 
 def create_and_save_table_with_calculations(data, exercise):
-    # Define the name of the file for saving the table image
-    timestamp = s.starts_and_ends_of_stops[0]
-    start_dt = datetime.fromtimestamp(timestamp).strftime("%d-%m-%Y %H-%M-%S")
-
-    # Create and open the folder to save the tables
-    create_and_open_folder(f'Patients/{s.chosen_patient_ID}/Tables/{exercise}/{start_dt}')
+    # Get session folder (created by create_workbook_for_training)
+    session_folder = getattr(s, 'current_session_folder', None)
+    
+    if session_folder is None:
+        # Fallback to old behavior if session_folder not set
+        timestamp = s.starts_and_ends_of_stops[0]
+        start_dt = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d_%H-%M-%S")
+        session_folder = f"Patients/{s.chosen_patient_ID}/Trainings/{start_dt}"
+    
+    # Create exercise folder inside session folder (only when needed!)
+    exercise_folder = f"{session_folder}/{exercise}"
+    os.makedirs(exercise_folder, exist_ok=True)
 
     # Set the maximum title length
     max_title_length = 32  # As specified
 
-    # Iterate over each table data (each table if for an angle/distance)
+    # Iterate over each table data (each table is for an angle/distance)
     for table_name, table_data in data.items():
         # Perform calculations (min, max, avg, std)
         # Create a new plot
@@ -604,14 +716,11 @@ def create_and_save_table_with_calculations(data, exercise):
         title_text = table_name[:-2]
         display_title = title_text.center(max_title_length)  # Pad evenly on both sides
 
-
-
-        if len(y_values)>0:
+        if len(y_values) > 0:
             min_val = f"{min(y_values):.2f}"
             max_val = f"{max(y_values):.2f}"
             average = f"{(sum(y_values) / len(y_values)):.2f}"
             stdev = f"{np.std(y_values):.2f}"
-
         else:
             min_val = "אין נתונים"[::-1]
             max_val = "אין נתונים"[::-1]
@@ -623,7 +732,6 @@ def create_and_save_table_with_calculations(data, exercise):
             'ערכים'[::-1]: [min_val, max_val, average, stdev],  # Reverse Hebrew labels
             'מדדים'[::-1]: [s[::-1] for s in ['מינימום', 'מקסימום', 'ממוצע', 'סטיית תקן']]  # Reverse Hebrew labels
         }
-
 
         # Create a pandas DataFrame
         df = pd.DataFrame(calculation_data)
@@ -646,9 +754,6 @@ def create_and_save_table_with_calculations(data, exercise):
         table.set_fontsize(12)
         table.scale(1.5, 1.3)  # Make the columns narrower by reducing the width scaling
 
-        # Optionally, set the column width manually (you can remove this if not needed)
-        # table.auto_set_column_width([0, 1])  # Adjust columns 0 and 1 to be narrower
-
         # Set the background color for the cells and the text properties
         for (i, j), cell in table.get_celld().items():
             if i == 0:  # Header row
@@ -658,18 +763,276 @@ def create_and_save_table_with_calculations(data, exercise):
 
             cell.set_facecolor('#ffffff')  # White background for header cells
 
-        timestamp = s.starts_and_ends_of_stops[0]
-        start_dt = datetime.fromtimestamp(timestamp).strftime("%d-%m-%Y %H-%M-%S")
-
         # Save the table as an image with the background color and no transparency
-        table_filename = f'Patients/{s.chosen_patient_ID}/Tables/{exercise}/{start_dt}/{table_name}.png'
-        plt.savefig(table_filename, bbox_inches='tight', pad_inches=0, dpi=100)  # Removed transparent=True
+        table_filename = f'{exercise_folder}/{table_name}.png'
+        plt.savefig(table_filename, bbox_inches='tight', pad_inches=0, dpi=100)
         plt.close()  # Close the figure to clear memory
+    
+    print(f"[Excel] Saved tables to: {exercise_folder}")
 
 
 
 def close_workbook():
     s.training_workbook.close()
+
+
+
+def save_patient_rom(patient_id, rom_data):
+    """
+    Save patient ROM assessment results to Excel.
+    
+    Args:
+        patient_id: Patient ID
+        rom_data: Dict with format {'joint_name': angle_value, ...}
+                  e.g., {'shoulder_flexion_right': 142.5, 'shoulder_flexion_left': 138.2}
+    """
+    print(f"\n{'='*60}")
+    print(f"[ROM SAVE] Saving ROM data for patient {patient_id}")
+    print(f"[ROM SAVE] Data to save:")
+    for joint, value in rom_data.items():
+        print(f"  - {joint}: {value:.2f}°")
+    print(f"{'='*60}\n")
+    
+    """
+    Save personalized ROM (Range of Motion) limits for a specific patient.
+    Writes to a sheet named 'Patient_ROM' in Patients.xlsx.
+    Creates the sheet if it doesn't exist.
+    
+    DEBUG VERSION - Comprehensive logging
+    
+    Args:
+        patient_id: The ID of the patient to save ROM data for.
+        rom_data: Dictionary of joint names to their max angle values.
+                  Example: {'shoulder_flexion_right': 140, 'elbow_flexion_right': 110}
+    
+    Returns:
+        True if ROM data was saved successfully, False otherwise.
+    """
+    import os
+    
+    file_path = "Patients.xlsx"
+    sheet_name = "Patient_ROM"
+    
+    print("-" * 50)
+    print("[Excel] save_patient_rom() called")
+    print(f"[Excel]   patient_id: {patient_id}")
+    print(f"[Excel]   rom_data: {rom_data}")
+    print(f"[Excel]   file_path: {file_path}")
+    print(f"[Excel]   sheet_name: {sheet_name}")
+    
+    # Check if file exists
+    if not os.path.exists(file_path):
+        print(f"[Excel] ERROR: File {file_path} does not exist!")
+        print(f"[Excel] Current working directory: {os.getcwd()}")
+        print(f"[Excel] Files in current directory: {os.listdir('.')}")
+        return False
+    
+    print(f"[Excel] File exists: OK")
+    
+    try:
+        print("[Excel] Loading workbook...")
+        workbook = openpyxl.load_workbook(file_path)
+        print(f"[Excel] Workbook loaded. Sheets: {workbook.sheetnames}")
+        
+        # Create sheet if it doesn't exist
+        if sheet_name not in workbook.sheetnames:
+            print(f"[Excel] Sheet '{sheet_name}' not found. Creating it...")
+            sheet = workbook.create_sheet(sheet_name)
+            # Add patient_id as first header
+            sheet.cell(row=1, column=1, value="patient_id")
+            print(f"[Excel] Created new sheet '{sheet_name}' with 'patient_id' header")
+        else:
+            sheet = workbook[sheet_name]
+            print(f"[Excel] Using existing sheet '{sheet_name}'")
+        
+        # Get existing headers (starting from column 1)
+        print("[Excel] Reading existing headers...")
+        existing_headers = {}
+        for col_idx, cell in enumerate(sheet[1], start=1):
+            if cell.value is not None:
+                existing_headers[cell.value] = col_idx
+        print(f"[Excel] Existing headers: {existing_headers}")
+        
+        # Add any new joint names as headers
+        next_col = sheet.max_column + 1 if sheet.max_column else 2
+        print(f"[Excel] Next available column: {next_col}")
+        
+        for joint_name in rom_data.keys():
+            if joint_name not in existing_headers:
+                print(f"[Excel] Adding new header '{joint_name}' at column {next_col}")
+                sheet.cell(row=1, column=next_col, value=joint_name)
+                existing_headers[joint_name] = next_col
+                next_col += 1
+        
+        # Find or create row for this patient
+        print(f"[Excel] Looking for patient row with ID '{patient_id}'...")
+        patient_row = None
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=1):
+            cell_value = row[0].value
+            if str(cell_value) == str(patient_id):
+                patient_row = row[0].row
+                print(f"[Excel] Found existing patient row: {patient_row}")
+                break
+        
+        if patient_row is None:
+            # Add new row for this patient
+            patient_row = sheet.max_row + 1 if sheet.max_row else 2
+            sheet.cell(row=patient_row, column=1, value=patient_id)
+            print(f"[Excel] Created new patient row: {patient_row}")
+        
+        # Write ROM values
+        print("[Excel] Writing ROM values...")
+        for joint_name, value in rom_data.items():
+            col_idx = existing_headers.get(joint_name)
+            if col_idx:
+                print(f"[Excel]   Writing {joint_name}={value} to row {patient_row}, column {col_idx}")
+                sheet.cell(row=patient_row, column=col_idx, value=value)
+            else:
+                print(f"[Excel]   WARNING: Could not find column for '{joint_name}'")
+        
+        # Also update the timestamp for when ROM was last updated
+        from datetime import datetime
+        timestamp_col_name = "rom_last_updated"
+        if timestamp_col_name not in existing_headers:
+            timestamp_col = next_col
+            sheet.cell(row=1, column=timestamp_col, value=timestamp_col_name)
+            existing_headers[timestamp_col_name] = timestamp_col
+            print(f"[Excel] Added '{timestamp_col_name}' column at {timestamp_col}")
+        else:
+            timestamp_col = existing_headers[timestamp_col_name]
+        
+        timestamp_value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sheet.cell(row=patient_row, column=timestamp_col, value=timestamp_value)
+        print(f"[Excel]   Updated {timestamp_col_name} = {timestamp_value}")
+        
+        # Save the workbook
+        print(f"[Excel] Saving workbook to {file_path}...")
+        workbook.save(file_path)
+        print("[Excel] Workbook saved successfully!")
+        
+        # Close the workbook to release the file handle
+        workbook.close()
+        print("[Excel] Workbook closed.")
+        
+        # Also update the global variable
+        if hasattr(s, 'patient_rom_limits'):
+            s.patient_rom_limits.update(rom_data)
+            print(f"[Excel] Updated s.patient_rom_limits: {s.patient_rom_limits}")
+        else:
+            s.patient_rom_limits = rom_data.copy()
+            print(f"[Excel] Created s.patient_rom_limits: {s.patient_rom_limits}")
+        
+        print(f"[Excel] SUCCESS: Saved ROM limits for patient {patient_id}")
+        print("-" * 50)
+        return True
+        
+    except PermissionError:
+        print(f"[Excel] ERROR: Permission denied! Is the file open in Excel?")
+        print(f"[Excel] Close the file and try again.")
+        return False
+    except FileNotFoundError:
+        print(f"[Excel] ERROR: File {file_path} not found!")
+        return False
+    except Exception as e:
+        print(f"[Excel] ERROR: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+
+def load_patient_rom(patient_id):
+    """
+    Load personalized ROM (Range of Motion) limits for a specific patient.
+    Reads from a sheet named 'Patient_ROM' in Patients.xlsx and populates s.patient_rom_limits.
+    
+    DEBUG VERSION - Comprehensive logging
+    
+    Args:
+        patient_id: The ID of the patient to load ROM data for.
+    
+    Returns:
+        True if ROM data was loaded successfully, False otherwise.
+    """
+    file_path = "Patients.xlsx"
+    sheet_name = "Patient_ROM"
+    
+    print("-" * 50)
+    print("[Excel] load_patient_rom() called")
+    print(f"[Excel]   patient_id: {patient_id}")
+    
+    try:
+        workbook = openpyxl.load_workbook(file_path)
+        print(f"[Excel] Workbook loaded. Sheets: {workbook.sheetnames}")
+        
+        # Check if the Patient_ROM sheet exists
+        if sheet_name not in workbook.sheetnames:
+            print(f"[Excel] Sheet '{sheet_name}' not found. No ROM data available.")
+            s.patient_rom_limits = {}
+            workbook.close()
+            return False
+        
+        sheet = workbook[sheet_name]
+        print(f"[Excel] Using sheet '{sheet_name}'")
+        
+        # Find the row for this patient (patient_id in first column)
+        patient_row = None
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=1):
+            if str(row[0].value) == str(patient_id):
+                patient_row = row[0].row
+                break
+        
+        if patient_row is None:
+            print(f"[Excel] Patient {patient_id} not found in {sheet_name}.")
+            s.patient_rom_limits = {}
+            workbook.close()
+            return False
+        
+        print(f"[Excel] Found patient at row {patient_row}")
+        
+        # Read header row to get joint names
+        headers = []
+        for cell in sheet[1]:
+            if cell.value is not None:
+                headers.append(cell.value)
+        print(f"[Excel] Headers: {headers}")
+        
+        # Populate patient_rom_limits dictionary
+        s.patient_rom_limits = {}
+        for col_idx, header in enumerate(headers[1:], start=2):  # Skip first column (patient_id)
+            cell_value = sheet.cell(row=patient_row, column=col_idx).value
+            if cell_value is not None and header is not None:
+                try:
+                    s.patient_rom_limits[header] = float(cell_value)
+                except (ValueError, TypeError):
+                    pass  # Skip non-numeric values
+        
+        workbook.close()
+        
+        print(f"[Excel] Loaded ROM limits: {s.patient_rom_limits}")
+        print("-" * 50)
+        return True
+        
+    except FileNotFoundError:
+        print(f"[Excel] ERROR: File {file_path} not found!")
+        s.patient_rom_limits = {}
+        return False
+    except Exception as e:
+        print(f"[Excel] ERROR: {type(e).__name__}: {e}")
+        s.patient_rom_limits = {}
+        return False
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # def create_summary_workbook():

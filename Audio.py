@@ -10,7 +10,7 @@ import queue
 class ContinuousAudio(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
-        random_number = random.randint(1, 6)
+        random_number = random.randint(1, 5)
         self.file_name = f'song_{random_number}'
         self.current_volume = s.volume
         self.last_additional_audio_time = 0

@@ -40,7 +40,85 @@ class Training(threading.Thread):
         print("Training Done")
 
     def select_exercises(self, options_for_ex_in_training, exercise_pairs, max_exercises= 10,  max_per_category=4):
+        
+        # List of exercises that have Gymmy robot implementations
+        # This prevents crashes when trying to run exercises without robot support
+        SUPPORTED_EXERCISES = [
+            "ball_bend_elbows",
+            "ball_raise_arms_above_head",
+            "ball_open_arms_above_head_and_lean",
+            "ball_raise_arms_above_head_and_lean",
+            "band_open_arms",
+            "band_pull",
+            "band_open_arms_and_up",
+            "stick_bend_elbows_and_up",
+            "stick_raise_arms_above_head",
+            "stick_up_and_lean",
+            "stick_switch",
+            "weights_raise_arms_forward",
+            "weights_abduction",
+            "weights_bend_elbows",
+            "weights_up_and_down",
+            "notool_open_arms",
+            "notool_bend_and_straighten_elbows",
+            "notool_turn_wrists",
+            "notool_hands_behind_and_lean"
+        ]
+        
+        def filter_supported_exercises(exercises):
+            """Filter out exercises that don't have Gymmy robot implementations"""
+            filtered = []
+            unsupported = []
+            for ex in exercises:
+                if ex in SUPPORTED_EXERCISES:
+                    filtered.append(ex)
+                else:
+                    unsupported.append(ex)
+            
+            if unsupported:
+                print(f"[Training] ⚠️  Skipping {len(unsupported)} unsupported exercises:")
+                for ex in unsupported:
+                    print(f"             - {ex} (no Gymmy robot implementation)")
+            
+            return filtered
+        
+        # Check if ROM Assessment mode is active
+        if s.is_rom_assessment_mode:
+            print("[Training] ROM Mode: Loading patient's selected exercises for ROM assessment")
+            
+            # Import here to avoid circular imports
+            import ExerciseConfig
+            
+            # Get exercises that the physiotherapist selected for this patient
+            patient_exercises = ExerciseConfig.get_patient_selected_exercises(s.chosen_patient_ID)
+            
+            if patient_exercises:
+                # Filter out unsupported exercises
+                patient_exercises = filter_supported_exercises(patient_exercises)
+                
+                if patient_exercises:
+                    print(f"[Training] ROM Mode: Using {len(patient_exercises)} supported exercises:")
+                    for ex in patient_exercises:
+                        print(f"  - {ex}")
+                    return patient_exercises
+                else:
+                    print("[Training] ROM Mode: No supported exercises found, using defaults")
+            else:
+                # Fallback to default exercises if no exercises found
+                print("[Training] ROM Mode: No exercises found for patient, using defaults")
+            
+            # Default exercises (all verified to have Gymmy implementations)
+            return [
+                "ball_raise_arms_above_head",
+                "band_open_arms",
+                "ball_bend_elbows",
+                "stick_switch",
+                "notool_hands_behind_and_lean"
+            ]
 
+        # Filter exercises for regular training too (not just ROM mode)
+        options_for_ex_in_training = filter_supported_exercises(options_for_ex_in_training)
+        
         if len(options_for_ex_in_training) <= max_exercises:
             return options_for_ex_in_training  # If 10 or fewer exercises exist, use all
 
@@ -197,7 +275,7 @@ class Training(threading.Thread):
 
 
     def training_session(self):
-        while s.ex_in_training==[]:
+        while s.ex_in_training==[] and not getattr(s, "is_rom_assessment_mode", False):
             time.sleep(0.1)
 
             if s.finish_program:
@@ -410,6 +488,14 @@ class Training(threading.Thread):
 
 
     def finish_training(self):
+        # ==================== RESET ROM MODE ====================
+        # Critical: Reset ROM assessment mode when training ends
+        # This ensures normal feedback behavior in subsequent trainings
+        if getattr(s, 'is_rom_assessment_mode', False):
+            print("[Training] Resetting ROM assessment mode")
+            s.is_rom_assessment_mode = False
+        # =========================================================
+        
         #time.sleep(3)
         s.starts_and_ends_of_stops.append(time.time())
 
@@ -615,6 +701,11 @@ class Training(threading.Thread):
         s.number_of_repetitions_in_training=0
         s.did_training_paused= False
         s.starts_and_ends_of_stops= []
+        
+        # ==================== ROM MODE RESET ====================
+        s.is_rom_assessment_mode = False  # Critical: reset for next training
+        # =========================================================
+        
         time.sleep(2)
         s.general_sayings = []
         s.num_exercises_started = 0

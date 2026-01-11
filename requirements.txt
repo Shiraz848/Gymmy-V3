@@ -1,0 +1,43 @@
+# Gymmy - Physical Therapy Robot System
+# Python 3.8+ required
+
+# Core dependencies
+numpy>=1.21.0
+pandas>=1.3.0
+openpyxl>=3.0.9
+
+# GUI
+tkinter  # Usually included with Python
+Pillow>=8.3.0
+
+# Computer Vision
+opencv-python>=4.5.0
+
+# Audio
+pygame>=2.0.0
+
+# Plotting and Visualization
+matplotlib>=3.4.0
+
+# Signal Processing
+scipy>=1.7.0
+
+# ZED Camera SDK (install separately)
+# pyzed - Install from Stereolabs: https://www.stereolabs.com/developers/release/
+
+# Robot Communication
+# pyserial>=3.5  # If needed for robot communication
+
+# Email functionality
+# smtplib  # Standard library
+
+# PDF generation (if using reportlab)
+# reportlab>=3.6.0
+
+# Web browser control
+# webbrowser  # Standard library
+
+# Optional: For development
+# pytest>=6.0.0
+# black>=21.0
+
