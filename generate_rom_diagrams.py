@@ -564,6 +564,255 @@ def create_sample_data_viz():
 
 
 # =============================================================================
+# 8. HYBRID ROM THRESHOLD VISUALIZATION
+# =============================================================================
+def create_hybrid_threshold_viz():
+    """
+    Create a visual explanation of the Hybrid ROM Logic:
+    - ROM personalized lower bounds (what patient CAN do)
+    - Hardcoded safety upper bounds (what patient SHOULD NOT exceed)
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+    
+    # ===== LEFT PLOT: UP Position (e.g., weights_abduction) =====
+    ax1 = axes[0]
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 180)
+    ax1.set_xlabel('Time (seconds)', fontsize=12)
+    ax1.set_ylabel('Shoulder Angle (degrees)', fontsize=12)
+    ax1.set_title('UP Position: Shoulder Abduction\n(weights_abduction)', fontsize=14, fontweight='bold')
+    
+    # Hardcoded safety limit (DANGER zone above this)
+    hardcoded_up_ub = 120  # Don't go above shoulder level
+    ax1.axhline(y=hardcoded_up_ub, color='red', linestyle='--', linewidth=2, label='Hardcoded Max (120°) - Safety')
+    ax1.fill_between([0, 10], hardcoded_up_ub, 180, color='red', alpha=0.15)
+    ax1.text(5, 150, 'DANGER ZONE\n(Above shoulder level)', ha='center', va='center', 
+             fontsize=10, color='darkred', fontweight='bold')
+    
+    # ROM personalized threshold (GOAL zone above this)
+    rom_up_lb = 75  # Patient's personal capability
+    ax1.axhline(y=rom_up_lb, color='green', linestyle='-', linewidth=2, label=f'ROM Min ({rom_up_lb}°) - Personal Goal')
+    
+    # SUCCESS zone (between ROM min and hardcoded max)
+    ax1.fill_between([0, 10], rom_up_lb, hardcoded_up_ub, color='lightgreen', alpha=0.4)
+    ax1.text(5, 97, 'SUCCESS ZONE\n(Personalized Range)', ha='center', va='center', 
+             fontsize=11, color='darkgreen', fontweight='bold')
+    
+    # NOT YET zone (below ROM min)
+    ax1.fill_between([0, 10], 0, rom_up_lb, color='yellow', alpha=0.2)
+    ax1.text(5, 40, 'NOT YET\n(Keep raising)', ha='center', va='center', 
+             fontsize=10, color='olive')
+    
+    # Simulated patient movement
+    t = np.linspace(0, 10, 100)
+    # Simulate patient raising arm - reaches personal limit
+    angle = 20 + 70 * np.sin(np.pi * t / 5) ** 2  # Smooth rise to ~90°
+    ax1.plot(t, angle, 'b-', linewidth=2.5, label='Patient Movement')
+    
+    # Mark counting point
+    success_idx = np.where(angle >= rom_up_lb)[0]
+    if len(success_idx) > 0:
+        ax1.scatter(t[success_idx[0]], angle[success_idx[0]], s=200, c='green', marker='*', 
+                   zorder=5, label='Rep Counted Here')
+    
+    ax1.legend(loc='lower right', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_yticks([0, 30, 60, rom_up_lb, 90, hardcoded_up_ub, 150, 180])
+    
+    # ===== RIGHT PLOT: DOWN Position =====
+    ax2 = axes[1]
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 180)
+    ax2.set_xlabel('Time (seconds)', fontsize=12)
+    ax2.set_ylabel('Shoulder Angle (degrees)', fontsize=12)
+    ax2.set_title('DOWN Position: Return Phase\n(weights_abduction)', fontsize=14, fontweight='bold')
+    
+    # Hardcoded safety limit (DANGER zone below this - theoretical)
+    hardcoded_down_lb = 0
+    ax2.axhline(y=hardcoded_down_lb, color='red', linestyle='--', linewidth=2, label='Hardcoded Min (0°)')
+    
+    # ROM personalized threshold (must lower to at least here)
+    rom_down_ub = 45  # Patient's personal capability to lower
+    ax2.axhline(y=rom_down_ub, color='green', linestyle='-', linewidth=2, label=f'ROM Max ({rom_down_ub}°) - Personal Goal')
+    
+    # SUCCESS zone (between hardcoded min and ROM max)
+    ax2.fill_between([0, 10], hardcoded_down_lb, rom_down_ub, color='lightgreen', alpha=0.4)
+    ax2.text(5, 22, 'SUCCESS ZONE\n(Lowered enough)', ha='center', va='center', 
+             fontsize=11, color='darkgreen', fontweight='bold')
+    
+    # NOT YET zone (above ROM max)
+    ax2.fill_between([0, 10], rom_down_ub, 180, color='yellow', alpha=0.2)
+    ax2.text(5, 110, 'NOT YET\n(Keep lowering)', ha='center', va='center', 
+             fontsize=10, color='olive')
+    
+    # Simulated patient movement - lowering arm
+    angle_down = 90 - 60 * np.sin(np.pi * t / 5) ** 2  # Smooth descent to ~30°
+    ax2.plot(t, angle_down, 'b-', linewidth=2.5, label='Patient Movement')
+    
+    # Mark counting point
+    success_idx = np.where(angle_down <= rom_down_ub)[0]
+    if len(success_idx) > 0:
+        ax2.scatter(t[success_idx[0]], angle_down[success_idx[0]], s=200, c='green', marker='*', 
+                   zorder=5, label='Ready for Next Rep')
+    
+    ax2.legend(loc='upper right', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_yticks([0, 30, rom_down_ub, 60, 90, 120, 150, 180])
+    
+    plt.tight_layout()
+    
+    filepath = os.path.join(OUTPUT_FOLDER, '8_Hybrid_ROM_Thresholds.png')
+    plt.savefig(filepath, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"Created: {filepath}")
+
+
+# =============================================================================
+# 9. COMPARISON: Original vs Hybrid ROM Logic
+# =============================================================================
+def create_comparison_diagram():
+    """
+    Visual comparison of Original System vs Hybrid ROM System.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # ===== LEFT: Original System =====
+    ax1 = axes[0]
+    ax1.set_xlim(0, 10)
+    ax1.set_ylim(0, 180)
+    ax1.set_title('Original System\n(Fixed Thresholds - All or Nothing)', fontsize=13, fontweight='bold', color='darkred')
+    ax1.set_xlabel('Time', fontsize=11)
+    ax1.set_ylabel('Angle (degrees)', fontsize=11)
+    
+    # Fixed thresholds
+    fixed_up_lb = 100
+    fixed_up_ub = 180
+    ax1.axhline(y=fixed_up_lb, color='blue', linestyle='-', linewidth=2)
+    ax1.axhline(y=fixed_up_ub, color='blue', linestyle='-', linewidth=2)
+    ax1.fill_between([0, 10], fixed_up_lb, fixed_up_ub, color='lightblue', alpha=0.3, label=f'Fixed Range: {fixed_up_lb}°-{fixed_up_ub}°')
+    
+    # Patient with limited ROM (can only reach 85°)
+    t = np.linspace(0, 10, 100)
+    patient_max = 85
+    angle = 20 + (patient_max - 20) * np.sin(np.pi * t / 5) ** 2
+    ax1.plot(t, angle, 'r-', linewidth=2.5, label=f'Patient (max {patient_max}°)')
+    
+    ax1.text(5, 140, 'Required: >= 100 degrees', ha='center', fontsize=11, color='blue')
+    ax1.text(5, patient_max + 8, f'Patient max: {patient_max} degrees', ha='center', fontsize=10, color='red')
+    ax1.text(5, 50, 'Never counts!\nPatient stuck at 0 reps', ha='center', fontsize=12, 
+             color='darkred', fontweight='bold', 
+             bbox=dict(boxstyle='round', facecolor='mistyrose', edgecolor='red'))
+    
+    ax1.legend(loc='lower right')
+    ax1.grid(True, alpha=0.3)
+    
+    # ===== RIGHT: Hybrid ROM System =====
+    ax2 = axes[1]
+    ax2.set_xlim(0, 10)
+    ax2.set_ylim(0, 180)
+    ax2.set_title('Hybrid ROM System\n(Personalized + Safety)', fontsize=13, fontweight='bold', color='darkgreen')
+    ax2.set_xlabel('Time', fontsize=11)
+    ax2.set_ylabel('Angle (degrees)', fontsize=11)
+    
+    # Safety limit (hardcoded)
+    safety_limit = 120
+    ax2.axhline(y=safety_limit, color='red', linestyle='--', linewidth=2, label=f'Safety Max: {safety_limit}° (Hardcoded)')
+    ax2.fill_between([0, 10], safety_limit, 180, color='red', alpha=0.1)
+    
+    # Personalized threshold (from ROM assessment)
+    personal_min = 75  # What patient showed they can do
+    ax2.axhline(y=personal_min, color='green', linestyle='-', linewidth=2, label=f'Personal Min: {personal_min}° (ROM)')
+    ax2.fill_between([0, 10], personal_min, safety_limit, color='lightgreen', alpha=0.4)
+    
+    # Same patient movement
+    ax2.plot(t, angle, 'b-', linewidth=2.5, label=f'Patient Movement')
+    
+    # Count points
+    success_points = np.where(angle >= personal_min)[0]
+    if len(success_points) > 0:
+        ax2.scatter(t[success_points[0]], angle[success_points[0]], s=200, c='green', marker='*', zorder=5)
+    
+    ax2.text(5, 97, 'SUCCESS ZONE\n(75-120 degrees)', ha='center', fontsize=11, 
+             color='darkgreen', fontweight='bold')
+    ax2.text(5, 50, 'Counts when patient\nreaches their personal best!', ha='center', fontsize=11, 
+             color='darkgreen',
+             bbox=dict(boxstyle='round', facecolor='honeydew', edgecolor='green'))
+    
+    ax2.legend(loc='upper right', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    filepath = os.path.join(OUTPUT_FOLDER, '9_Original_vs_Hybrid_Comparison.png')
+    plt.savefig(filepath, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"Created: {filepath}")
+
+
+# =============================================================================
+# 10. ELBOW (Secondary Angle) Logic
+# =============================================================================
+def create_elbow_logic_viz():
+    """
+    Visualize secondary angle (elbow) logic - minimum only, no upper limit.
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    ax.set_xlim(0, 10)
+    ax.set_ylim(90, 190)
+    ax.set_xlabel('Time (seconds)', fontsize=12)
+    ax.set_ylabel('Elbow Angle (degrees)', fontsize=12)
+    ax.set_title('Secondary Angle (Elbow): Minimum Threshold Only\n(Must stay straight enough)', 
+                fontsize=14, fontweight='bold')
+    
+    # ROM minimum threshold
+    rom_elbow_min = 155  # Patient showed they can keep elbow at least 155°
+    ax.axhline(y=rom_elbow_min, color='green', linestyle='-', linewidth=2.5, 
+               label=f'ROM Minimum: {rom_elbow_min}°')
+    
+    # Perfect straight (180°) reference
+    ax.axhline(y=180, color='gray', linestyle=':', linewidth=1.5, label='Perfect Straight: 180°')
+    
+    # Success zone (above ROM min)
+    ax.fill_between([0, 10], rom_elbow_min, 190, color='lightgreen', alpha=0.4)
+    ax.text(5, 172, 'OK ZONE\n(Elbow straight enough)', ha='center', va='center', 
+            fontsize=11, color='darkgreen', fontweight='bold')
+    
+    # Failure zone (below ROM min)
+    ax.fill_between([0, 10], 90, rom_elbow_min, color='lightyellow', alpha=0.4)
+    ax.text(5, 125, 'NOT OK\n(Elbow too bent)', ha='center', va='center', 
+            fontsize=11, color='darkorange', fontweight='bold')
+    
+    # Simulated elbow movement - stays mostly straight
+    t = np.linspace(0, 10, 100)
+    elbow_angle = 175 - 15 * np.sin(np.pi * t / 2.5) ** 2 + np.random.normal(0, 2, 100)
+    elbow_angle = np.clip(elbow_angle, 145, 185)
+    ax.plot(t, elbow_angle, 'b-', linewidth=2, label='Patient Elbow Angle')
+    
+    # Mark OK regions
+    ok_mask = elbow_angle >= rom_elbow_min
+    ax.fill_between(t, 90, elbow_angle, where=ok_mask, color='green', alpha=0.2)
+    ax.fill_between(t, 90, elbow_angle, where=~ok_mask, color='red', alpha=0.2)
+    
+    ax.legend(loc='lower right', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_yticks([90, 120, rom_elbow_min, 165, 180])
+    
+    # Add annotation
+    ax.annotate('No upper limit!\nIf elbow is straighter\n(180°) - that\'s perfect!', 
+                xy=(8, 180), xytext=(7, 185),
+                fontsize=9, ha='center',
+                bbox=dict(boxstyle='round', facecolor='white', edgecolor='gray'))
+    
+    plt.tight_layout()
+    
+    filepath = os.path.join(OUTPUT_FOLDER, '10_Elbow_Secondary_Angle_Logic.png')
+    plt.savefig(filepath, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"Created: {filepath}")
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
@@ -578,6 +827,11 @@ if __name__ == "__main__":
     create_comparison()
     create_data_flow()
     create_sample_data_viz()
+    
+    # NEW: Hybrid ROM visualizations
+    create_hybrid_threshold_viz()
+    create_comparison_diagram()
+    create_elbow_logic_viz()
     
     print("="*60)
     print(f"All diagrams saved to: {OUTPUT_FOLDER}/")

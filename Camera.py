@@ -320,48 +320,155 @@ class Camera(threading.Thread):
             else:
                 return sum(values.values()) / len(values)
     
+    def get_unified_thresholds(self, exercise_name, up_lb, up_ub, down_lb, down_ub, angle_suffix=""):
+        """
+        SIMPLIFIED: Get unified thresholds from ROM data.
+        
+        Loads ROM values for both sides and returns a SINGLE unified range
+        that works for both sides (most permissive combination).
+        
+        Args:
+            exercise_name: Name of the exercise
+            up_lb, up_ub: Default UP range bounds
+            down_lb, down_ub: Default DOWN range bounds  
+            angle_suffix: Optional suffix for secondary angles (e.g., "_elbow", "_spread")
+        
+        Returns:
+            tuple: (up_lb, up_ub, down_lb, down_ub) - unified thresholds
+        """
+        # If no ROM data, return defaults
+        if not hasattr(s, 'patient_rom_limits') or not s.patient_rom_limits:
+            return up_lb, up_ub, down_lb, down_ub
+        
+        # Build the base key (with optional angle suffix)
+        base = f"{exercise_name}{angle_suffix}"
+        
+        # Collect values from both sides
+        r_up_lb = s.patient_rom_limits.get(f"{base}_right_up_lb", up_lb)
+        l_up_lb = s.patient_rom_limits.get(f"{base}_left_up_lb", up_lb)
+        r_up_ub = s.patient_rom_limits.get(f"{base}_right_up_ub", up_ub)
+        l_up_ub = s.patient_rom_limits.get(f"{base}_left_up_ub", up_ub)
+        r_down_lb = s.patient_rom_limits.get(f"{base}_right_down_lb", down_lb)
+        l_down_lb = s.patient_rom_limits.get(f"{base}_left_down_lb", down_lb)
+        r_down_ub = s.patient_rom_limits.get(f"{base}_right_down_ub", down_ub)
+        l_down_ub = s.patient_rom_limits.get(f"{base}_left_down_ub", down_ub)
+        
+        # UNIFY: Take most permissive range (min of lbs, max of ubs)
+        unified_up_lb = min(r_up_lb, l_up_lb) if r_up_lb and l_up_lb else up_lb
+        unified_up_ub = max(r_up_ub, l_up_ub) if r_up_ub and l_up_ub else up_ub
+        unified_down_lb = min(r_down_lb, l_down_lb) if r_down_lb and l_down_lb else down_lb
+        unified_down_ub = max(r_down_ub, l_down_ub) if r_down_ub and l_down_ub else down_ub
+        
+        # Check if we found any ROM data
+        has_rom = any(f"{base}_" in key for key in s.patient_rom_limits.keys())
+        if has_rom:
+            suffix_str = f" ({angle_suffix[1:]})" if angle_suffix else ""
+            print(f"[ROM] ✓ {exercise_name}{suffix_str} UNIFIED: UP[{unified_up_lb:.0f}°-{unified_up_ub:.0f}°] DOWN[{unified_down_lb:.0f}°-{unified_down_ub:.0f}°]")
+        
+        return unified_up_lb, unified_up_ub, unified_down_lb, unified_down_ub
+    
+    # Keep old function name for backwards compatibility (redirects to unified)
     def get_side_thresholds(self, exercise_name, up_lb, up_ub, down_lb, down_ub):
-        """
-        Get side-specific thresholds for an exercise.
-        
-        Returns a dict with thresholds for both sides:
-        {
-            'right': {'up_lb': x, 'up_ub': x, 'down_lb': x, 'down_ub': x},
-            'left': {'up_lb': x, 'up_ub': x, 'down_lb': x, 'down_ub': x}
+        """DEPRECATED: Use get_unified_thresholds instead. Kept for backwards compatibility."""
+        u_up_lb, u_up_ub, u_down_lb, u_down_ub = self.get_unified_thresholds(
+            exercise_name, up_lb, up_ub, down_lb, down_ub)
+        # Return in old format for compatibility
+        return {
+            'right': {'up_lb': u_up_lb, 'up_ub': u_up_ub, 'down_lb': u_down_lb, 'down_ub': u_down_ub},
+            'left': {'up_lb': u_up_lb, 'up_ub': u_up_ub, 'down_lb': u_down_lb, 'down_ub': u_down_ub}
         }
-        """
-        thresholds = {}
-        
-        for side in ['right', 'left']:
-            thresholds[side] = {
-                'up_lb': self.get_dynamic_threshold(f"{exercise_name}_up_lb", up_lb, side=side),
-                'up_ub': self.get_dynamic_threshold(f"{exercise_name}_up_ub", up_ub, side=side),
-                'down_lb': self.get_dynamic_threshold(f"{exercise_name}_down_lb", down_lb, side=side),
-                'down_ub': self.get_dynamic_threshold(f"{exercise_name}_down_ub", down_ub, side=side),
-            }
-        
-        # Log only if we found personalized thresholds
-        has_rom_data = hasattr(s, 'patient_rom_limits') and s.patient_rom_limits
-        if has_rom_data:
-            has_rom = any(
-                f"{exercise_name}_{side}" in key 
-                for key in s.patient_rom_limits.keys() 
-                for side in ['right', 'left']
-            )
-            if has_rom:
-                print(f"[ROM] ✓ {exercise_name} using personalized thresholds:")
-                print(f"       RIGHT: UP[{thresholds['right']['up_lb']:.0f}°-{thresholds['right']['up_ub']:.0f}°] DOWN[{thresholds['right']['down_lb']:.0f}°-{thresholds['right']['down_ub']:.0f}°]")
-                print(f"       LEFT:  UP[{thresholds['left']['up_lb']:.0f}°-{thresholds['left']['up_ub']:.0f}°] DOWN[{thresholds['left']['down_lb']:.0f}°-{thresholds['left']['down_ub']:.0f}°]")
-            else:
-                print(f"[ROM] ⚠️ {exercise_name} - no ROM data found, using defaults")
-                print(f"       Keys searched for: {exercise_name}_right, {exercise_name}_left")
-                print(f"       Available keys: {list(s.patient_rom_limits.keys())[:5]}...")
-        else:
-            print(f"[ROM] ⚠️ {exercise_name} - s.patient_rom_limits is EMPTY! Using default thresholds")
-            print(f"       UP[{up_lb}°-{up_ub}°] DOWN[{down_lb}°-{down_ub}°]")
-        
-        return thresholds
 
+    def get_secondary_angle_thresholds(self, exercise_name, up_lb, up_ub, down_lb, down_ub):
+        """
+        Get threshold for secondary angles (e.g., elbow).
+        
+        NEW LOGIC: For secondary angles that should stay constant (like straight elbow),
+        we only care about the MINIMUM threshold. If the patient can reach higher (straighter),
+        that's great! We don't limit the upper bound.
+        
+        Returns the MINIMUM acceptable angle based on ROM data.
+        """
+        # Get angle name from config
+        exercise_config = ExerciseConfig.get_exercise_config(exercise_name)
+        angle_name = "elbow"
+        if exercise_config:
+            for angle_cfg in exercise_config.get("angles", []):
+                if angle_cfg.get("index") in [2, 3] and angle_cfg.get("angle_name"):
+                    angle_name = angle_cfg["angle_name"]
+                    break
+        
+        u_up_lb, u_up_ub, u_down_lb, u_down_ub = self.get_unified_thresholds(
+            exercise_name, up_lb, up_ub, down_lb, down_ub, f"_{angle_name}")
+        
+        # ==================== MINIMUM THRESHOLD FOR SECONDARY ANGLES ====================
+        # We want the patient to be at least as good as what ROM showed, minus 10° margin
+        # 
+        # For elbow that should be straight:
+        #   - ROM might show they can reach 165° (almost straight)
+        #   - We accept anything >= 155° (10° margin for measurement noise)
+        #   - No upper limit - if they reach 180° that's perfect!
+        
+        # Take the MINIMUM of all lower bounds (most permissive)
+        all_lbs = [u_up_lb, u_down_lb, down_lb, up_lb]
+        valid_lbs = [v for v in all_lbs if v is not None and v >= 0]
+        min_threshold = min(valid_lbs) if valid_lbs else 0
+        
+        # Subtract 10° margin for measurement noise, but not below 0
+        min_threshold = max(0, min_threshold - 10)
+        
+        print(f"[ROM] ⚡ {exercise_name} ({angle_name}): angle >= {min_threshold:.0f}°")
+        # =================================================================================
+        
+        # Return in old format for compatibility, but now up_lb is the only thing that matters
+        return {
+            'right': {'up_lb': min_threshold, 'up_ub': 180, 'down_lb': min_threshold, 'down_ub': 180},
+            'left': {'up_lb': min_threshold, 'up_ub': 180, 'down_lb': min_threshold, 'down_ub': 180}
+        }
+    
+    def _get_secondary_threshold(self, base_key, bound_type, default_value):
+        """Helper to get a secondary threshold value from patient_rom_limits."""
+        if not hasattr(s, 'patient_rom_limits') or not s.patient_rom_limits:
+            return default_value
+        
+        key = f"{base_key}_{bound_type}"
+        value = s.patient_rom_limits.get(key)
+        
+        if value is not None and value > 0:
+            return value
+        return default_value
+
+    def get_tertiary_angle_thresholds(self, exercise_name, up_lb, up_ub, down_lb, down_ub):
+        """
+        Get threshold for tertiary angles.
+        Same logic as secondary angles - only minimum threshold matters.
+        """
+        # Get angle name from config
+        exercise_config = ExerciseConfig.get_exercise_config(exercise_name)
+        angle_name = "spread"
+        if exercise_config:
+            for angle_cfg in exercise_config.get("angles", []):
+                if angle_cfg.get("index") in [4, 5] and angle_cfg.get("angle_name"):
+                    angle_name = angle_cfg["angle_name"]
+                    break
+        
+        u_up_lb, u_up_ub, u_down_lb, u_down_ub = self.get_unified_thresholds(
+            exercise_name, up_lb, up_ub, down_lb, down_ub, f"_{angle_name}")
+        
+        # ==================== MINIMUM THRESHOLD FOR TERTIARY ANGLES ====================
+        all_lbs = [u_up_lb, u_down_lb, down_lb, up_lb]
+        valid_lbs = [v for v in all_lbs if v is not None and v >= 0]
+        min_threshold = min(valid_lbs) if valid_lbs else 0
+        
+        # Subtract 10° margin
+        min_threshold = max(0, min_threshold - 10)
+        
+        print(f"[ROM] ⚡ {exercise_name} ({angle_name}): angle >= {min_threshold:.0f}°")
+        # ================================================================================
+        
+        return {
+            'right': {'up_lb': min_threshold, 'up_ub': 180, 'down_lb': min_threshold, 'down_ub': 180},
+            'left': {'up_lb': min_threshold, 'up_ub': 180, 'down_lb': min_threshold, 'down_ub': 180}
+        }
 
     def _record_rom_frame(self):
         """
@@ -369,7 +476,8 @@ class Camera(threading.Thread):
         This "spies" on s.last_entry_angles while the exercise runs.
         
         UPDATED: Now uses ExerciseConfig for per-exercise thresholds.
-        Keys are now: {exercise_name}_{side} (e.g., "ball_bend_elbows_right")
+        Keys are now: {exercise_name}_{side} for primary angles
+        And: {exercise_name}_{angle_name}_{side} for secondary angles (e.g., elbow)
         """
         if not s.is_rom_assessment_mode:
             return
@@ -397,9 +505,15 @@ class Camera(threading.Thread):
             for angle_config in exercise_config["angles"]:
                 idx = angle_config["index"]
                 side = angle_config["side"]
+                angle_name = angle_config.get("angle_name", None)  # e.g., "elbow" for secondary angles
                 
-                # Key format: {exercise_name}_{side} (e.g., "ball_bend_elbows_right")
-                key = f"{exercise_name}_{side}"
+                # Key format: 
+                # Primary angles (index 0,1): {exercise_name}_{side}
+                # Secondary angles (index 2,3): {exercise_name}_{angle_name}_{side}
+                if angle_name:
+                    key = f"{exercise_name}_{angle_name}_{side}"
+                else:
+                    key = f"{exercise_name}_{side}"
                 
                 if s.last_entry_angles and len(s.last_entry_angles) > idx:
                     val = s.last_entry_angles[idx]
@@ -456,7 +570,13 @@ class Camera(threading.Thread):
         
         for angle_config in exercise_config["angles"]:
             side = angle_config["side"]
-            data_key = f"{exercise_name}_{side}"  # e.g., "ball_bend_elbows_right"
+            angle_name = angle_config.get("angle_name", None)
+            
+            # Construct data_key based on whether this is a primary or secondary angle
+            if angle_name:
+                data_key = f"{exercise_name}_{angle_name}_{side}"  # e.g., "ball_raise_arms_above_head_elbow_right"
+            else:
+                data_key = f"{exercise_name}_{side}"  # e.g., "ball_bend_elbows_right"
             
             if data_key not in self.rom_recording_data:
                 print(f"[ROM] No data for '{data_key}'")
@@ -504,6 +624,28 @@ class Camera(threading.Thread):
             success = Excel.save_patient_rom(patient_id, updates_to_save)
             if success:
                 print("[ROM] ✅ Data saved successfully!")
+                
+                # Save detailed calculation report for this exercise
+                try:
+                    # Collect raw data for this exercise
+                    raw_data = {
+                        "right": self.rom_recording_data.get(f"{exercise_name}_right", []),
+                        "left": self.rom_recording_data.get(f"{exercise_name}_left", [])
+                    }
+                    
+                    # Collect calculated thresholds for this exercise
+                    calculated_thresholds = {}
+                    for key, value in updates_to_save.items():
+                        if key.startswith(exercise_name):
+                            # Extract the suffix (e.g., "right_up_lb" from "ball_bend_elbows_right_up_lb")
+                            suffix = key.replace(f"{exercise_name}_", "")
+                            calculated_thresholds[suffix] = value
+                    
+                    if calculated_thresholds:
+                        Excel.save_rom_calculation_report(
+                            patient_id, exercise_name, raw_data, calculated_thresholds)
+                except Exception as e:
+                    print(f"[ROM] Warning: Could not save report for {exercise_name}: {e}")
             else:
                 print("[ROM] ❌ Failed to save data!")
         else:
@@ -1031,36 +1173,29 @@ class Camera(threading.Thread):
             s.change_in_trend = [False] * 4
             increasing_decreasing = [[-1] * 40 for _ in range(len(s.last_entry_angles))]
 
-            # ==================== PERSONALIZED ROM THRESHOLDS ====================
-            # Get SIDE-SPECIFIC thresholds based on patient ROM limits (if available)
-            # Each side (right/left) gets its own thresholds for accurate feedback
+            # ==================== SIMPLIFIED ROM THRESHOLDS ====================
+            # Load UNIFIED thresholds (same for both sides) - like the original system
+            # but with personalized values from ROM assessment
             
-            # First angle - side-specific thresholds
-            thresholds = self.get_side_thresholds(exercise_name, up_lb, up_ub, down_lb, down_ub)
+            dyn_up_lb, dyn_up_ub, dyn_down_lb, dyn_down_ub = self.get_unified_thresholds(
+                exercise_name, up_lb, up_ub, down_lb, down_ub)
             
-            # Right side thresholds
-            dyn_up_lb_right = thresholds['right']['up_lb']
-            dyn_up_ub_right = thresholds['right']['up_ub']
-            dyn_down_lb_right = thresholds['right']['down_lb']
-            dyn_down_ub_right = thresholds['right']['down_ub']
+            # Secondary angle uses WIDE permissive thresholds
+            thresholds2 = self.get_secondary_angle_thresholds(exercise_name, up_lb2, up_ub2, down_lb2, down_ub2)
+            dyn_up_lb2 = thresholds2['right']['up_lb']
+            dyn_up_ub2 = thresholds2['right']['up_ub']
+            dyn_down_lb2 = thresholds2['right']['down_lb']
+            dyn_down_ub2 = thresholds2['right']['down_ub']
             
-            # Left side thresholds
-            dyn_up_lb_left = thresholds['left']['up_lb']
-            dyn_up_ub_left = thresholds['left']['up_ub']
-            dyn_down_lb_left = thresholds['left']['down_lb']
-            dyn_down_ub_left = thresholds['left']['down_ub']
-            
-            # Backwards compatibility - aggregated thresholds for code that still uses them
-            dyn_up_lb = min(dyn_up_lb_right, dyn_up_lb_left)
-            dyn_up_ub = max(dyn_up_ub_right, dyn_up_ub_left)
-            dyn_down_lb = min(dyn_down_lb_right, dyn_down_lb_left)
-            dyn_down_ub = max(dyn_down_ub_right, dyn_down_ub_left)
-            
-            # Second angle thresholds (not side-specific yet - future improvement)
-            dyn_up_lb2 = self.get_dynamic_threshold(f"{exercise_name}_up_lb2", up_lb2)
-            dyn_up_ub2 = self.get_dynamic_threshold(f"{exercise_name}_up_ub2", up_ub2)
-            dyn_down_lb2 = self.get_dynamic_threshold(f"{exercise_name}_down_lb2", down_lb2)
-            dyn_down_ub2 = self.get_dynamic_threshold(f"{exercise_name}_down_ub2", down_ub2)
+            # For backwards compatibility with side-specific code
+            dyn_up_lb_right = dyn_up_lb_left = dyn_up_lb
+            dyn_up_ub_right = dyn_up_ub_left = dyn_up_ub
+            dyn_down_lb_right = dyn_down_lb_left = dyn_down_lb
+            dyn_down_ub_right = dyn_down_ub_left = dyn_down_ub
+            dyn_up_lb2_right = dyn_up_lb2_left = dyn_up_lb2
+            dyn_up_ub2_right = dyn_up_ub2_left = dyn_up_ub2
+            dyn_down_lb2_right = dyn_down_lb2_left = dyn_down_lb2
+            dyn_down_ub2_right = dyn_down_ub2_left = dyn_down_ub2
             # =====================================================================
 
             while s.req_exercise == exercise_name:
@@ -1203,9 +1338,24 @@ class Camera(threading.Thread):
 
 
                         if left_right_differ:
-                            # Using dynamic thresholds for personalized ROM
-                            if (dyn_up_lb < right_angle < dyn_up_ub) and (dyn_down_lb < left_angle < dyn_down_ub) and \
-                                    (dyn_up_lb2 < right_angle2 < dyn_up_ub2) and (dyn_down_lb2 < left_angle2 < dyn_down_ub2) and (not flag):
+                            # ==================== HYBRID ROM LOGIC (left_right_differ) ====================
+                            # Sides alternate: one is UP while other is DOWN
+                            # UP: ROM lower bound + HARDCODED upper bound (safety)
+                            # DOWN: HARDCODED lower bound + ROM upper bound
+                            # Secondary: only minimum check
+                            
+                            right_angle2_ok = right_angle2 >= dyn_up_lb2
+                            left_angle2_ok = left_angle2 >= dyn_up_lb2
+                            
+                            # Phase A: Right UP, Left DOWN (with safety limits)
+                            right_up_ok = (right_angle >= dyn_up_lb) and (right_angle <= up_ub)
+                            left_down_ok = (left_angle <= dyn_down_ub) and (left_angle >= down_lb)
+                            
+                            # Phase B: Right DOWN, Left UP (with safety limits)
+                            right_down_ok = (right_angle <= dyn_down_ub) and (right_angle >= down_lb)
+                            left_up_ok = (left_angle >= dyn_up_lb) and (left_angle <= up_ub)
+                            
+                            if right_up_ok and left_down_ok and right_angle2_ok and left_angle2_ok and (not flag):
 
                                     if s.reached_max_limit:
                                         flag = True
@@ -1222,48 +1372,52 @@ class Camera(threading.Thread):
                                         self.count_not_good_range = 0
                                         s.time_of_change_position = time.time()
                                         s.not_reached_max_limit_rest_rules_ok = False
-                                        # s.change_in_trend = [False] * 4
-                                        # increasing_decreasing = [[0] * 40 for _ in range(len(s.last_entry_angles))]
 
                                     else:
                                         s.not_reached_max_limit_rest_rules_ok = True
 
 
-                            elif (dyn_down_lb < right_angle < dyn_down_ub) and (dyn_up_lb < left_angle < dyn_up_ub) and \
-                                    (dyn_down_lb2 < right_angle2 < dyn_down_ub2) and (dyn_up_lb2 < left_angle2 < dyn_up_ub2) and (flag):
+                            elif right_down_ok and left_up_ok and right_angle2_ok and left_angle2_ok and (flag):
                                 flag = False
                                 s.all_rules_ok = False
                                 s.was_in_first_condition = True
                                 self.count_not_good_range = 0
                                 s.time_of_change_position = time.time()
-                                # s.change_in_trend = [False] * 4
-                                # increasing_decreasing = [[0] * 40 for _ in range(len(s.last_entry_angles))]
-
-                            # elif time.time() - s.time_of_change_position > 3:
-                            #     if not s.reached_max_limit and (dyn_up_lb < right_angle < dyn_up_ub) and (dyn_down_lb < left_angle < dyn_down_ub) and \
-                            #         (dyn_up_lb2 < right_angle2 < dyn_up_ub2) and (dyn_down_lb2 < left_angle2 < dyn_down_ub2):
-                            #         self.count_not_good_range += 1
-                            #
-                            #         if self.count_not_good_range >= 20:
-                            #             s.try_again_calibration = True
 
                         else:
-                            # ==================== SIDE-SPECIFIC COMPARISON ====================
-                            # Using side-specific thresholds for accurate personalized feedback
-                            # Each side compared to its own ROM limits
+                            # ==================== HYBRID ROM LOGIC ====================
+                            # PRIMARY ANGLES:
+                            #   UP: ROM lower bound (personalized) + HARDCODED upper bound (safety)
+                            #   DOWN: HARDCODED lower bound (safety) + ROM upper bound (personalized)
+                            # SECONDARY ANGLES:
+                            #   Only check minimum (ROM personalized), no upper limit
                             
-                            right_in_up = dyn_up_lb_right < right_angle < dyn_up_ub_right
-                            left_in_up = dyn_up_lb_left < left_angle < dyn_up_ub_left
-                            right_in_down = dyn_down_lb_right < right_angle < dyn_down_ub_right
-                            left_in_down = dyn_down_lb_left < left_angle < dyn_down_ub_left
+                            # UP = reached high enough (>= ROM) but not too high (<= hardcoded safety)
+                            right_in_up = (right_angle >= dyn_up_lb) and (right_angle <= up_ub)
+                            left_in_up = (left_angle >= dyn_up_lb) and (left_angle <= up_ub)
                             
-                            # Second angle uses aggregated thresholds (future: make side-specific too)
-                            right_angle2_in_up = dyn_up_lb2 < right_angle2 < dyn_up_ub2
-                            left_angle2_in_up = dyn_up_lb2 < left_angle2 < dyn_up_ub2
-                            right_angle2_in_down = dyn_down_lb2 < right_angle2 < dyn_down_ub2
-                            left_angle2_in_down = dyn_down_lb2 < left_angle2 < dyn_down_ub2
+                            # DOWN = lowered enough (<= ROM) but not too low (>= hardcoded safety)
+                            right_in_down = (right_angle <= dyn_down_ub) and (right_angle >= down_lb)
+                            left_in_down = (left_angle <= dyn_down_ub) and (left_angle >= down_lb)
                             
-                            if right_in_up and left_in_up and right_angle2_in_up and left_angle2_in_up and (not flag):
+                            # SECONDARY ANGLES (e.g., elbow):
+                            # Only minimum check - must be at least as good as ROM showed
+                            right_angle2_ok = right_angle2 >= dyn_up_lb2
+                            left_angle2_ok = left_angle2 >= dyn_up_lb2
+                            
+                            # Debug: print angle status every 2 seconds
+                            if not hasattr(self, '_last_debug_time') or time.time() - self._last_debug_time > 2:
+                                self._last_debug_time = time.time()
+                                print(f"[ANGLES] R={right_angle:.0f}° L={left_angle:.0f}° | R2={right_angle2:.0f}° L2={left_angle2:.0f}° | flag={flag}")
+                                if flag:  # waiting for DOWN
+                                    print(f"[DOWN] Need: {down_lb:.0f}°<=angle<={dyn_down_ub:.0f}° | Elbow>={dyn_up_lb2:.0f}°")
+                                    print(f"[DOWN] R_ok={right_in_down} L_ok={left_in_down} R2_ok={right_angle2_ok} L2_ok={left_angle2_ok}")
+                                else:  # waiting for UP
+                                    print(f"[UP] Need: {dyn_up_lb:.0f}°<=angle<={up_ub:.0f}° | Elbow>={dyn_up_lb2:.0f}°")
+                                    print(f"[UP] R_ok={right_in_up} L_ok={left_in_up} R2_ok={right_angle2_ok} L2_ok={left_angle2_ok}")
+                            
+                            # UP CONDITION: Primary angles in range + elbows OK
+                            if right_in_up and left_in_up and right_angle2_ok and left_angle2_ok and (not flag):
 
                                 if s.reached_max_limit:
                                     flag = True
@@ -1278,18 +1432,17 @@ class Camera(threading.Thread):
                                     s.time_of_change_position = time.time()
                                     self.count_not_good_range = 0
                                     s.not_reached_max_limit_rest_rules_ok = False
-                                    # s.change_in_trend = [False] * 4
 
                                 else:
                                     s.not_reached_max_limit_rest_rules_ok = True
 
-                            elif right_in_down and left_in_down and right_angle2_in_down and left_angle2_in_down and (flag):
+                            # DOWN CONDITION: Primary angles low enough + elbows still straight enough
+                            elif right_in_down and left_in_down and right_angle2_ok and left_angle2_ok and (flag):
                                 flag = False
                                 s.all_rules_ok = False
                                 s.was_in_first_condition = True
                                 self.count_not_good_range = 0
                                 s.time_of_change_position = time.time()
-                                # s.change_in_trend = [False] * 4
 
                             # elif time.time() - s.time_of_change_position > 3:
                             #     if not s.reached_max_limit and (dyn_up_lb < right_angle < dyn_up_ub) and (dyn_down_lb < left_angle < dyn_down_ub) and \
@@ -1341,6 +1494,37 @@ class Camera(threading.Thread):
             counter = 0
             list_joints = []
             s.time_of_change_position = time.time()
+
+            # ==================== SIMPLIFIED ROM THRESHOLDS ====================
+            # Load UNIFIED thresholds for this one-side exercise
+            # Combine right/left defaults, then unify from ROM data
+            
+            # Primary angle - unify thresholds
+            dyn_up_lb, dyn_up_ub, dyn_down_lb, dyn_down_ub = self.get_unified_thresholds(
+                exercise_name,
+                min(up_lb_right, up_lb_left), max(up_ub_right, up_ub_left),
+                min(down_lb_right, down_lb_left), max(down_ub_right, down_ub_left))
+            
+            # Secondary angle - use WIDE permissive thresholds
+            thresholds2 = self.get_secondary_angle_thresholds(
+                exercise_name, 
+                min(up_lb_right2, up_lb_left2), max(up_ub_right2, up_ub_left2),
+                min(down_lb_right2, down_lb_left2), max(down_ub_right2, down_ub_left2))
+            dyn_up_lb2 = thresholds2['right']['up_lb']
+            dyn_up_ub2 = thresholds2['right']['up_ub']
+            dyn_down_lb2 = thresholds2['right']['down_lb']
+            dyn_down_ub2 = thresholds2['right']['down_ub']
+            
+            # For backwards compatibility - all sides use same unified values
+            dyn_up_lb_right = dyn_up_lb_left = dyn_up_lb
+            dyn_up_ub_right = dyn_up_ub_left = dyn_up_ub
+            dyn_down_lb_right = dyn_down_lb_left = dyn_down_lb
+            dyn_down_ub_right = dyn_down_ub_left = dyn_down_ub
+            dyn_up_lb_right2 = dyn_up_lb_left2 = dyn_up_lb2
+            dyn_up_ub_right2 = dyn_up_ub_left2 = dyn_up_ub2
+            dyn_down_lb_right2 = dyn_down_lb_left2 = dyn_down_lb2
+            dyn_down_ub_right2 = dyn_down_ub_left2 = dyn_down_ub2
+            # =====================================================================
 
             while s.req_exercise == exercise_name:
                 while s.did_training_paused and not s.stop_requested:
@@ -1474,15 +1658,28 @@ class Camera(threading.Thread):
 
 
 
-                    if (up_lb_right < right_angle < up_ub_right) and (up_lb_left < left_angle < up_ub_left) and \
-                            (up_lb_right2 < right_angle2 < up_ub_right2) and (up_lb_left2 < left_angle2 < up_ub_left2) and (not flag):
+                    # ==================== HYBRID ROM LOGIC (one_side) ====================
+                    # UP: ROM lower bound + HARDCODED upper bound (safety)
+                    # DOWN: HARDCODED lower bound + ROM upper bound
+                    # Secondary: only minimum check
+                    
+                    # Using side-specific hardcoded bounds for safety
+                    right_in_up = (right_angle >= dyn_up_lb) and (right_angle <= up_ub_right)
+                    left_in_up = (left_angle >= dyn_up_lb) and (left_angle <= up_ub_left)
+                    right_in_down = (right_angle <= dyn_down_ub) and (right_angle >= down_lb_right)
+                    left_in_down = (left_angle <= dyn_down_ub) and (left_angle >= down_lb_left)
+                    
+                    # Secondary angles only need minimum check
+                    right_angle2_ok = right_angle2 >= dyn_up_lb2
+                    left_angle2_ok = left_angle2 >= dyn_up_lb2
+                    
+                    if right_in_up and left_in_up and right_angle2_ok and left_angle2_ok and (not flag):
 
                         if s.reached_max_limit:
                             flag = True
                             counter += 1
                             s.number_of_repetitions_in_training += 1
                             s.patient_repetitions_counting_in_exercise+=1
-                            #self.change_count_screen(counter)
                             print("counter:" + str(counter))
                             # === ROM MODE: Suppress visual feedback ===
                             if not getattr(s, 'is_rom_assessment_mode', False):
@@ -1495,10 +1692,7 @@ class Camera(threading.Thread):
                         else:
                             s.not_reached_max_limit_rest_rules_ok = True
 
-                        #  if not s.robot_count:
-                        # say(str(counter))
-                    elif (down_lb_right < right_angle < down_ub_right) and (down_lb_left < left_angle < down_ub_left) and \
-                            (down_lb_right2 < right_angle2 < down_ub_right2) and (down_lb_left2 < left_angle2 < down_ub_left2) and (flag):
+                    elif right_in_down and left_in_down and right_angle2_ok and left_angle2_ok and (flag):
                         flag = False
                         s.all_rules_ok = False
                         s.was_in_first_condition = True
@@ -1559,6 +1753,29 @@ class Camera(threading.Thread):
         s.was_in_first_condition = True
         s.time_of_change_position = time.time() + 2
 
+        # ==================== SIMPLIFIED ROM THRESHOLDS ====================
+        # Load UNIFIED thresholds (same for both sides)
+        
+        dyn_up_lb, dyn_up_ub, dyn_down_lb, dyn_down_ub = self.get_unified_thresholds(
+            exercise_name, up_lb, up_ub, down_lb, down_ub)
+        
+        # Secondary angle uses WIDE permissive thresholds
+        thresholds2 = self.get_secondary_angle_thresholds(exercise_name, up_lb2, up_ub2, down_lb2, down_ub2)
+        dyn_up_lb2 = thresholds2['right']['up_lb']
+        dyn_up_ub2 = thresholds2['right']['up_ub']
+        dyn_down_lb2 = thresholds2['right']['down_lb']
+        dyn_down_ub2 = thresholds2['right']['down_ub']
+        
+        # For backwards compatibility - all sides use same unified values
+        dyn_up_lb_right = dyn_up_lb_left = dyn_up_lb
+        dyn_up_ub_right = dyn_up_ub_left = dyn_up_ub
+        dyn_down_lb_right = dyn_down_lb_left = dyn_down_lb
+        dyn_down_ub_right = dyn_down_ub_left = dyn_down_ub
+        dyn_up_lb2_right = dyn_up_lb2_left = dyn_up_lb2
+        dyn_up_ub2_right = dyn_up_ub2_left = dyn_up_ub2
+        dyn_down_lb2_right = dyn_down_lb2_left = dyn_down_lb2
+        dyn_down_ub2_right = dyn_down_ub2_left = dyn_down_ub2
+        # =====================================================================
 
         while s.req_exercise == exercise_name:
             while s.did_training_paused and not s.stop_requested:
@@ -1695,11 +1912,22 @@ class Camera(threading.Thread):
                     # print("distance between shoulders: "+str(abs(joints["L_shoulder"].x - joints["R_shoulder"].x)))
                     
                     if left_right_differ:
+                        # ==================== HYBRID ROM LOGIC (axis_check, left_right_differ) ====================
+                        # Secondary angles: only minimum check
+                        right_angle2_ok = right_angle2 >= dyn_up_lb2
+                        left_angle2_ok = left_angle2 >= dyn_up_lb2
+                        
+                        # Phase A: Right DOWN, Left UP (with safety limits)
+                        right_down_ok = (right_angle <= dyn_down_ub) and (right_angle >= down_lb)
+                        left_up_ok = (left_angle >= dyn_up_lb) and (left_angle <= up_ub)
+                        
+                        # Phase B: Right UP, Left DOWN (with safety limits)
+                        right_up_ok = (right_angle >= dyn_up_lb) and (right_angle <= up_ub)
+                        left_down_ok = (left_angle <= dyn_down_ub) and (left_angle >= down_lb)
 
                         if wrist_check:
-                            if ((down_lb < right_angle < down_ub) and (up_lb < left_angle < up_ub) and \
-                                    (down_lb2 < right_angle2 < down_ub2) and (up_lb2 < left_angle2 < up_ub2) and (not flag)):
-
+                            # Phase A with wrist check
+                            if right_down_ok and left_up_ok and right_angle2_ok and left_angle2_ok and (not flag):
 
                                     if s.reached_max_limit:
                                         s.not_reached_max_limit_rest_rules_ok = False
@@ -1711,60 +1939,39 @@ class Camera(threading.Thread):
                                             s.number_of_repetitions_in_training += 1
                                             s.patient_repetitions_counting_in_exercise += 1
                                             print("counter:" + str(counter))
-                                            # === ROM MODE: Suppress visual feedback ===
                                             if not getattr(s, 'is_rom_assessment_mode', False):
-                                                s.all_rules_ok = True  # Only show green bar in regular training
-                                            # ==========================================
+                                                s.all_rules_ok = True
                                             s.time_of_change_position = time.time()
                                             self.count_not_good_range = 0
-
                                         else:
                                             s.hand_not_good = True
-
                                     else:
                                         s.not_reached_max_limit_rest_rules_ok = True
 
-                            elif (up_lb < right_angle < up_ub) and (down_lb < left_angle < down_ub) and \
-                                    (up_lb2 < right_angle2 < up_ub2) and (down_lb2 < left_angle2 < down_ub2) and (flag):
+                            # Phase B with wrist check
+                            elif right_up_ok and left_down_ok and right_angle2_ok and left_angle2_ok and (flag):
 
                                     if s.reached_max_limit:
                                         if joints["R_shoulder"].x - joints["L_wrist"].x > 50:
                                             s.hand_not_good = False
-
                                             counter += 1
                                             s.number_of_repetitions_in_training += 1
                                             s.patient_repetitions_counting_in_exercise += 1
                                             print("counter:" + str(counter))
-                                            # === ROM MODE: Suppress visual feedback ===
                                             if not getattr(s, 'is_rom_assessment_mode', False):
-                                                s.all_rules_ok = True  # Only show green bar in regular training
-                                            # ==========================================
+                                                s.all_rules_ok = True
                                             flag = False
                                             s.time_of_change_position = time.time()
                                             self.count_not_good_range = 0
                                             s.not_reached_max_limit_rest_rules_ok = False
-
                                         else:
                                             s.hand_not_good = True
-
                                     else:
                                         s.not_reached_max_limit_rest_rules_ok = True
 
-
-                            # elif time.time() - s.time_of_change_position > 1.5:
-                            #     if not s.reached_max_limit and \
-                            #            (((down_lb < right_angle < down_ub) and (up_lb < left_angle < up_ub) and (down_lb2 < right_angle2 < down_ub2) and (up_lb2 < left_angle2 < up_ub2) and (joints["R_wrist"].x - joints["L_shoulder"].x > 50)) or \
-                            #             ((up_lb < right_angle < up_ub) and (down_lb < left_angle < down_ub) and (up_lb2 < right_angle2 < up_ub2) and (down_lb2 < left_angle2 < down_ub2) and (joints["R_shoulder"].x - joints["L_wrist"].x > 50))):
-                            #         self.count_not_good_range += 1
-                            #
-                            #         if self.count_not_good_range >= 20:
-                            #             s.try_again_calibration = True
-                            #             exercise_name = "s"
-
-
                         else:
-                            if (up_lb < right_angle < up_ub) and (down_lb < left_angle < down_ub) and \
-                                    (up_lb2 < right_angle2 < up_ub2) and (down_lb2 < left_angle2 < down_ub2) and (not flag):
+                            # Phase A without wrist check
+                            if right_up_ok and left_down_ok and right_angle2_ok and left_angle2_ok and (not flag):
 
                                 if s.reached_max_limit:
                                     flag = True
@@ -1772,55 +1979,44 @@ class Camera(threading.Thread):
                                     s.number_of_repetitions_in_training += 1
                                     s.patient_repetitions_counting_in_exercise += 1
                                     print("counter:" + str(counter))
-                                    # === ROM MODE: Suppress visual feedback ===
                                     if not getattr(s, 'is_rom_assessment_mode', False):
-                                        s.all_rules_ok = True  # Only show green bar in regular training
-                                    # ==========================================
+                                        s.all_rules_ok = True
                                     s.time_of_change_position = time.time() + 3
                                     self.count_not_good_range = 0
-
                                     s.not_reached_max_limit_rest_rules_ok = False
-
                                 else:
                                     s.not_reached_max_limit_rest_rules_ok = True
 
-
-                            elif (down_lb < right_angle < down_ub) and (up_lb < left_angle < up_ub) and \
-                                    (down_lb2 < right_angle2 < down_ub2) and (up_lb2 < left_angle2 < up_ub2) and (flag):
+                            # Phase B without wrist check
+                            elif right_down_ok and left_up_ok and right_angle2_ok and left_angle2_ok and (flag):
 
                                 if s.reached_max_limit:
                                     counter += 1
                                     s.number_of_repetitions_in_training += 1
                                     s.patient_repetitions_counting_in_exercise += 1
                                     print("counter:" + str(counter))
-                                    # === ROM MODE: Suppress visual feedback ===
                                     if not getattr(s, 'is_rom_assessment_mode', False):
-                                        s.all_rules_ok = True  # Only show green bar in regular training
-                                    # ==========================================
+                                        s.all_rules_ok = True
                                     flag = False
                                     s.time_of_change_position = time.time() + 3
                                     self.count_not_good_range = 0
                                     s.not_reached_max_limit_rest_rules_ok = False
-
                                 else:
                                     s.not_reached_max_limit_rest_rules_ok = True
 
-                            # elif time.time() - s.time_of_change_position > 1.5:
-                            #     if not s.reached_max_limit and (((up_lb < right_angle < up_ub) and (down_lb < left_angle < down_ub) and (up_lb2 < right_angle2 < up_ub2) and (down_lb2 < left_angle2 < down_ub2)) or
-                            #        ((down_lb < right_angle < down_ub) and (up_lb < left_angle < up_ub) and (down_lb2 < right_angle2 < down_ub2) and (up_lb2 < left_angle2 < up_ub2))) and \
-                            #         abs(joints["L_shoulder"].z - joints["R_shoulder"].z)>100:
-                            #
-                            #         self.count_not_good_range += 1
-                            #         print("count_not_good_range: " + str(self.count_not_good_range))
-                            #
-                            #         if self.count_not_good_range >= 20:
-                            #             s.try_again_calibration = True
-                            #             exercise_name = "s"
-
 
                     else:
-                        if (up_lb < right_angle < up_ub) and (up_lb < left_angle < up_ub) and \
-                                (up_lb2 < right_angle2 < up_ub2) and (up_lb2 < left_angle2 < up_ub2) and (not flag):
+                        # ==================== HYBRID ROM LOGIC (axis_check, both sides) ====================
+                        # Both sides move together with safety limits
+                        right_in_up = (right_angle >= dyn_up_lb) and (right_angle <= up_ub)
+                        left_in_up = (left_angle >= dyn_up_lb) and (left_angle <= up_ub)
+                        right_in_down = (right_angle <= dyn_down_ub) and (right_angle >= down_lb)
+                        left_in_down = (left_angle <= dyn_down_ub) and (left_angle >= down_lb)
+                        right_angle2_ok = right_angle2 >= dyn_up_lb2
+                        left_angle2_ok = left_angle2 >= dyn_up_lb2
+                        
+                        # UP condition
+                        if right_in_up and left_in_up and right_angle2_ok and left_angle2_ok and (not flag):
 
                             if s.reached_max_limit:
                                 flag = True
@@ -1828,49 +2024,30 @@ class Camera(threading.Thread):
                                 s.number_of_repetitions_in_training += 1
                                 s.patient_repetitions_counting_in_exercise += 1
                                 print("counter:" + str(counter))
-                                # === ROM MODE: Suppress visual feedback ===
                                 if not getattr(s, 'is_rom_assessment_mode', False):
-                                    s.all_rules_ok = True  # Only show green bar in regular training
-                                # ==========================================
+                                    s.all_rules_ok = True
                                 s.time_of_change_position = time.time() + 2
                                 self.count_not_good_range = 0
                                 s.not_reached_max_limit_rest_rules_ok = False
-
                             else:
                                 s.not_reached_max_limit_rest_rules_ok = True
 
-
-                        elif (down_lb < right_angle < down_ub) and (down_lb < left_angle < down_ub) and \
-                                (down_lb2 < right_angle2 < down_ub2) and (down_lb2 < left_angle2 < down_ub2) and (flag):
+                        # DOWN condition
+                        elif right_in_down and left_in_down and right_angle2_ok and left_angle2_ok and (flag):
 
                             if s.reached_max_limit:
                                 counter += 1
                                 s.number_of_repetitions_in_training += 1
                                 s.patient_repetitions_counting_in_exercise += 1
                                 print("counter:" + str(counter))
-
                                 flag = False
-                                # === ROM MODE: Suppress visual feedback ===
                                 if not getattr(s, 'is_rom_assessment_mode', False):
-                                    s.all_rules_ok = True  # Only show green bar in regular training
-                                # ==========================================
+                                    s.all_rules_ok = True
                                 s.time_of_change_position = time.time() + 2
                                 self.count_not_good_range = 0
                                 s.not_reached_max_limit_rest_rules_ok = False
-
                             else:
                                 s.not_reached_max_limit_rest_rules_ok = True
-
-                        # elif time.time() - s.time_of_change_position > 1.5:
-                        #     if not s.reached_max_limit and \
-                        #            (((up_lb < right_angle < up_ub) and (up_lb < left_angle < up_ub) and (up_lb2 < right_angle2 < up_ub2) and (up_lb2 < left_angle2 < up_ub2)) or \
-                        #         ((down_lb < right_angle < down_ub) and (down_lb < left_angle < down_ub) and (down_lb2 < right_angle2 < down_ub2) and (down_lb2 < left_angle2 < down_ub2))):
-                        #
-                        #         self.count_not_good_range += 1
-                        #
-                        #         if self.count_not_good_range >= 20:
-                        #             s.try_again_calibration = True
-                        #             exercise_name = "s"
 
             if counter == s.rep:
                 s.req_exercise = ""
@@ -1925,6 +2102,26 @@ class Camera(threading.Thread):
         # s.change_in_trend = [False] * 6
         # increasing_decreasing = [[0] * 30 for _ in range(len(s.last_entry_angles))]
         # previous_entry = None
+
+        # ==================== SIMPLIFIED ROM THRESHOLDS ====================
+        # Load UNIFIED thresholds for primary angle
+        dyn_up_lb, dyn_up_ub, dyn_down_lb, dyn_down_ub = self.get_unified_thresholds(
+            exercise_name, up_lb, up_ub, down_lb, down_ub)
+        
+        # Secondary angle uses WIDE permissive thresholds
+        thresholds2 = self.get_secondary_angle_thresholds(exercise_name, up_lb2, up_ub2, down_lb2, down_ub2)
+        dyn_up_lb2 = thresholds2['right']['up_lb']
+        dyn_up_ub2 = thresholds2['right']['up_ub']
+        dyn_down_lb2 = thresholds2['right']['down_lb']
+        dyn_down_ub2 = thresholds2['right']['down_ub']
+        
+        # Tertiary angle uses WIDE permissive thresholds
+        thresholds3 = self.get_tertiary_angle_thresholds(exercise_name, up_lb3, up_ub3, down_lb3, down_ub3)
+        dyn_up_lb3 = thresholds3['right']['up_lb']
+        dyn_up_ub3 = thresholds3['right']['up_ub']
+        dyn_down_lb3 = thresholds3['right']['down_lb']
+        dyn_down_ub3 = thresholds3['right']['down_ub']
+        # =====================================================================
 
         while s.req_exercise == exercise_name:
             while s.did_training_paused and not s.stop_requested:
@@ -2081,11 +2278,26 @@ class Camera(threading.Thread):
                         right_angle2 is not None and left_angle2 is not None and \
                         right_angle3 is not None and left_angle3 is not None:
 
-                    if (up_lb < right_angle < up_ub) and (up_lb < left_angle < up_ub) and \
-                            (up_lb2 < right_angle2 < up_ub2) and (up_lb2 < left_angle2 < up_ub2) and \
-                            (up_lb3 < right_angle3 < up_ub3) and (up_lb3 < left_angle3 < up_ub3) and (not flag):
+                    # ==================== HYBRID ROM LOGIC (three angles) ====================
+                    # Primary angles: ROM lower bound + HARDCODED upper bound (safety)
+                    # Secondary/Tertiary angles: only minimum check
+                    
+                    right_in_up = (right_angle >= dyn_up_lb) and (right_angle <= up_ub)
+                    left_in_up = (left_angle >= dyn_up_lb) and (left_angle <= up_ub)
+                    right_in_down = (right_angle <= dyn_down_ub) and (right_angle >= down_lb)
+                    left_in_down = (left_angle <= dyn_down_ub) and (left_angle >= down_lb)
+                    
+                    # Secondary and tertiary angles only need minimum check
+                    right_angle2_ok = right_angle2 >= dyn_up_lb2
+                    left_angle2_ok = left_angle2 >= dyn_up_lb2
+                    right_angle3_ok = right_angle3 >= dyn_up_lb3
+                    left_angle3_ok = left_angle3 >= dyn_up_lb3
+                    
+                    # UP condition (with safety limits)
+                    if right_in_up and left_in_up and right_angle2_ok and left_angle2_ok and \
+                            right_angle3_ok and left_angle3_ok and (not flag):
 
-                        if not opened_arms: #happens only for "__open_arms_and_forward" exercises where we want to ignore the first opening
+                        if not opened_arms:  # happens only for "__open_arms_and_forward" exercises
                             opened_arms = True
                             flag = True
                             s.time_of_change_position = time.time()
@@ -2100,38 +2312,22 @@ class Camera(threading.Thread):
                                 s.number_of_repetitions_in_training += 1
                                 s.patient_repetitions_counting_in_exercise += 1
                                 print("counter:" + str(counter))
-                                # === ROM MODE: Suppress visual feedback ===
                                 if not getattr(s, 'is_rom_assessment_mode', False):
-                                    s.all_rules_ok = True  # Only show green bar in regular training
-                                # ==========================================
+                                    s.all_rules_ok = True
                                 s.time_of_change_position = time.time()
                                 self.count_not_good_range = 0
                                 s.not_reached_max_limit_rest_rules_ok = False
-                                # s.change_in_trend = [False] * 6
-                                # increasing_decreasing = [[0] * 30 for _ in range(len(s.last_entry_angles))]
-
                             else:
                                 s.not_reached_max_limit_rest_rules_ok = True
 
-                    elif (down_lb < right_angle < down_ub) and (down_lb < left_angle < down_ub) and \
-                            (down_lb2 < right_angle2 < down_ub2) and (down_lb2 < left_angle2 < down_ub2) and \
-                            (down_lb3 < right_angle3 < down_ub3) and (down_lb3 < left_angle3 < down_ub3) and (flag):
+                    # DOWN condition
+                    elif right_in_down and left_in_down and right_angle2_ok and left_angle2_ok and \
+                            right_angle3_ok and left_angle3_ok and (flag):
                         flag = False
                         s.all_rules_ok = False
                         s.was_in_first_condition = True
                         s.time_of_change_position = time.time()
                         self.count_not_good_range = 0
-                        # s.change_in_trend = [False] * 6
-                        # increasing_decreasing = [[0] * 30 for _ in range(len(s.last_entry_angles))]
-
-                    # elif time.time() - s.time_of_change_position > 3:
-                    #     if not s.reached_max_limit and (up_lb < right_angle < up_ub) and (up_lb < left_angle < up_ub) and \
-                    #         (up_lb2 < right_angle2 < up_ub2) and (up_lb2 < left_angle2 < up_ub2) and \
-                    #         (up_lb3 < right_angle3 < up_ub3) and (up_lb3 < left_angle3 < up_ub3):
-                    #         self.count_not_good_range += 1
-                    #
-                    #         if self.count_not_good_range >= 20:
-                    #             s.try_again_calibration = True
 
             if counter == s.rep:
                 s.req_exercise = ""

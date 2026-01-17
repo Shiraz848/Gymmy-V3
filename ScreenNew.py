@@ -2480,6 +2480,8 @@ class ExercisePage(tk.Frame):
                     s.all_rules_ok = False
 
             else:
+                # Use MIN - bar reaches 100% only when BOTH arms reach the threshold
+                # This matches the counting logic which requires both sides in range
                 distance = min(s.last_entry_angles[0], s.last_entry_angles[1])
 
         elif self.which_side == "left":

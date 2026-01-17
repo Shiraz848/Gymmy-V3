@@ -43,26 +43,36 @@ class Training(threading.Thread):
         
         # List of exercises that have Gymmy robot implementations
         # This prevents crashes when trying to run exercises without robot support
+        # List of ALL exercises that have implementations in Camera.py and ExerciseConfig.py
+        # Updated to include all exercises from ExerciseConfig
         SUPPORTED_EXERCISES = [
+            # Ball exercises
             "ball_bend_elbows",
             "ball_raise_arms_above_head",
-            "ball_open_arms_above_head_and_lean",
-            "ball_raise_arms_above_head_and_lean",
+            "ball_switch",
+            "ball_open_arms_and_forward",
+            # Band exercises
             "band_open_arms",
-            "band_pull",
             "band_open_arms_and_up",
+            "band_up_and_lean",
+            "band_straighten_left_arm_elbows_bend_to_sides",
+            "band_straighten_right_arm_elbows_bend_to_sides",
+            # Stick exercises
+            "stick_bend_elbows",
             "stick_bend_elbows_and_up",
             "stick_raise_arms_above_head",
-            "stick_up_and_lean",
             "stick_switch",
-            "weights_raise_arms_forward",
+            "stick_up_and_lean",
+            # Weights exercises
+            "weights_open_arms_and_forward",
             "weights_abduction",
-            "weights_bend_elbows",
-            "weights_up_and_down",
-            "notool_open_arms",
-            "notool_bend_and_straighten_elbows",
-            "notool_turn_wrists",
-            "notool_hands_behind_and_lean"
+            # No-tool exercises
+            "notool_hands_behind_and_lean",
+            "notool_right_hand_up_and_bend",
+            "notool_left_hand_up_and_bend",
+            "notool_raising_hands_diagonally",
+            "notool_right_bend_left_up_from_side",
+            "notool_left_bend_right_up_from_side",
         ]
         
         def filter_supported_exercises(exercises):
@@ -748,20 +758,74 @@ class Training(threading.Thread):
         s.can_comment_robot = False
         s.change_in_trend = [False]
 
+    def get_dynamic_bar_params(self, exercise_name, default_min, default_max, reverse_bar=False):
+        """
+        SIMPLIFIED: Get bar parameters using UNIFIED thresholds.
+        
+        Uses the same unified threshold logic as the counting logic in Camera.py
+        This ensures bar and counting are always in sync.
+        
+        For exercises where bar fills when angle INCREASES (reverse_bar=False):
+        - min_distance = down_ub (upper bound of DOWN range)
+        - max_distance = up_lb (lower bound of UP range)
+        
+        For exercises where bar fills when angle DECREASES (reverse_bar=True):
+        - min_distance = up_ub (upper bound of UP range)  
+        - max_distance = down_lb (lower bound of DOWN range)
+        """
+        if not hasattr(s, 'patient_rom_limits') or not s.patient_rom_limits:
+            return default_min, default_max
+        
+        # Get values from both sides
+        r_down_ub = s.patient_rom_limits.get(f"{exercise_name}_right_down_ub")
+        l_down_ub = s.patient_rom_limits.get(f"{exercise_name}_left_down_ub")
+        r_down_lb = s.patient_rom_limits.get(f"{exercise_name}_right_down_lb")
+        l_down_lb = s.patient_rom_limits.get(f"{exercise_name}_left_down_lb")
+        r_up_lb = s.patient_rom_limits.get(f"{exercise_name}_right_up_lb")
+        l_up_lb = s.patient_rom_limits.get(f"{exercise_name}_left_up_lb")
+        r_up_ub = s.patient_rom_limits.get(f"{exercise_name}_right_up_ub")
+        l_up_ub = s.patient_rom_limits.get(f"{exercise_name}_left_up_ub")
+        
+        # UNIFY thresholds: min of lbs, max of ubs (same as Camera.get_unified_thresholds)
+        down_ub = max(r_down_ub or 0, l_down_ub or 0) if (r_down_ub or l_down_ub) else None
+        down_lb = min(r_down_lb or 180, l_down_lb or 180) if (r_down_lb or l_down_lb) else None
+        up_lb = min(r_up_lb or 180, l_up_lb or 180) if (r_up_lb or l_up_lb) else None
+        up_ub = max(r_up_ub or 0, l_up_ub or 0) if (r_up_ub or l_up_ub) else None
+        
+        if reverse_bar:
+            # Bar fills when angle DECREASES
+            dynamic_min = up_ub if up_ub is not None else default_min
+            dynamic_max = down_lb if down_lb is not None else default_max
+        else:
+            # Bar fills when angle INCREASES
+            dynamic_min = down_ub if down_ub is not None else default_min
+            dynamic_max = up_lb if up_lb is not None else default_max
+        
+        # Ensure min < max with at least 10 degrees difference
+        if dynamic_min >= dynamic_max - 10:
+            dynamic_min = dynamic_max - 20
+        
+        print(f"[BAR] {exercise_name}: min={dynamic_min:.0f}° max={dynamic_max:.0f}° [reverse={reverse_bar}]")
+        
+        return dynamic_min, dynamic_max
+
     def which_exercise_page(self):
 
         #average_len_arms = (s.len_left_arm + s.len_right_arm)/2
 
         if s.req_exercise in ["ball_bend_elbows", "stick_bend_elbows"]:
-            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=True, reverse_bar=True, min_distance=65, max_distance= 130, which_side = "both")
+            min_d, max_d = self.get_dynamic_bar_params(s.req_exercise, 65, 130, reverse_bar=True)
+            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=True, reverse_bar=True, min_distance=min_d, max_distance=max_d, which_side = "both")
         elif s.req_exercise in ["ball_raise_arms_above_head", "stick_raise_arms_above_head"]:
-            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance= 30, max_distance= 105, which_side = "both")
+            min_d, max_d = self.get_dynamic_bar_params(s.req_exercise, 30, 105)
+            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance=min_d, max_distance=max_d, which_side = "both")
         elif s.req_exercise in ["ball_switch", "stick_switch"]:
             s.screen.switch_frame(ExercisePage, exercise_type="shoulders_distance_x", reverse_color=True, reverse_bar=True, min_distance=(s.dist_between_shoulders-s.dist_between_shoulders/4), max_distance= s.dist_between_shoulders)
         elif s.req_exercise in ["ball_open_arms_and_forward", "weights_open_arms_and_forward"]:
             s.screen.switch_frame(ExercisePage, exercise_type="wrist_distance_x", reverse_color=False, reverse_bar=False, min_distance=90, max_distance= 140)
         elif s.req_exercise in ["ball_open_arms_above_head", "stick_bend_elbows_and_up"]:
-            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance=30, max_distance= 110, which_side = "both")
+            min_d, max_d = self.get_dynamic_bar_params(s.req_exercise, 30, 110)
+            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance=min_d, max_distance=max_d, which_side = "both")
         elif s.req_exercise == "band_open_arms":
             s.screen.switch_frame(ExercisePage, exercise_type="wrist_distance_x", reverse_color=False, reverse_bar=False, min_distance=90, max_distance= 135)
         elif s.req_exercise == "band_open_arms_and_up":
@@ -773,13 +837,17 @@ class Training(threading.Thread):
         elif s.req_exercise in ["notool_right_hand_up_and_bend", "notool_left_hand_up_and_bend"]:
             s.screen.switch_frame(ExercisePage, exercise_type="shoulders_distance_x", reverse_color=True, reverse_bar=True, min_distance= s.dist_between_shoulders-50, max_distance= s.dist_between_shoulders)
         elif s.req_exercise in ["weights_abduction"]:
-            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance = 20, max_distance= 80, which_side = "both")
+            min_d, max_d = self.get_dynamic_bar_params(s.req_exercise, 20, 80)
+            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance=min_d, max_distance=max_d, which_side = "both")
         elif s.req_exercise in ["notool_right_bend_left_up_from_side"]:
-            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance = 0, max_distance= 165, which_side = "left")
+            min_d, max_d = self.get_dynamic_bar_params(s.req_exercise, 0, 165)
+            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance=min_d, max_distance=max_d, which_side = "left")
         elif s.req_exercise in ["notool_left_bend_right_up_from_side"]:
-            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance=0, max_distance=165, which_side="right")
+            min_d, max_d = self.get_dynamic_bar_params(s.req_exercise, 0, 165)
+            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance=min_d, max_distance=max_d, which_side="right")
         elif s.req_exercise in ["notool_raising_hands_diagonally"]:
-            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance = 50, max_distance = 185, which_side="both")
+            min_d, max_d = self.get_dynamic_bar_params(s.req_exercise, 50, 185)
+            s.screen.switch_frame(ExercisePage, exercise_type="wrist_height_y", reverse_color=False, reverse_bar=False, min_distance=min_d, max_distance=max_d, which_side="both")
 
 
 if __name__ == "__main__":

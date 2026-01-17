@@ -10,6 +10,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import ExerciseConfig as ExConfig
 
 
 PATIENTS_FILE = "Patients.xlsx"
@@ -445,6 +446,46 @@ def three_angles_graph_and_table(exercise_name, list_joints):
 #         create_and_save_table_with_calculations(data, exercise_name)
 
 
+def get_rom_thresholds_for_graph(exercise_name, angle_index):
+    """
+    Get ROM thresholds for displaying on graphs.
+    Returns: (rom_up_lb, rom_down_ub, hardcoded_up_ub, hardcoded_down_lb)
+    """
+    # Get hardcoded defaults from ExerciseConfig
+    config = ExConfig.get_exercise_config(exercise_name)
+    hardcoded_up_ub = None
+    hardcoded_down_lb = None
+    
+    if config:
+        for angle_cfg in config.get("angles", []):
+            if angle_cfg.get("index") == angle_index:
+                hardcoded_up_ub = angle_cfg.get("up_ub")
+                hardcoded_down_lb = angle_cfg.get("down_lb")
+                break
+    
+    # Get personalized ROM thresholds from patient data
+    rom_up_lb = None
+    rom_down_ub = None
+    
+    if hasattr(s, 'patient_rom_limits') and s.patient_rom_limits:
+        # Try both sides and take the unified values
+        r_up_lb = s.patient_rom_limits.get(f"{exercise_name}_right_up_lb")
+        l_up_lb = s.patient_rom_limits.get(f"{exercise_name}_left_up_lb")
+        r_down_ub = s.patient_rom_limits.get(f"{exercise_name}_right_down_ub")
+        l_down_ub = s.patient_rom_limits.get(f"{exercise_name}_left_down_ub")
+        
+        # Unified: min of lb, max of ub
+        if r_up_lb is not None or l_up_lb is not None:
+            valid_lbs = [v for v in [r_up_lb, l_up_lb] if v is not None]
+            rom_up_lb = min(valid_lbs) if valid_lbs else None
+        
+        if r_down_ub is not None or l_down_ub is not None:
+            valid_ubs = [v for v in [r_down_ub, l_down_ub] if v is not None]
+            rom_down_ub = max(valid_ubs) if valid_ubs else None
+    
+    return rom_up_lb, rom_down_ub, hardcoded_up_ub, hardcoded_down_lb
+
+
 def create_and_save_graph(data, exercise):
     # Get session folder (created by create_workbook_for_training)
     session_folder = getattr(s, 'current_session_folder', None)
@@ -459,56 +500,142 @@ def create_and_save_graph(data, exercise):
     exercise_folder = f"{session_folder}/{exercise}"
     os.makedirs(exercise_folder, exist_ok=True)
     
+    # Determine angle index for each graph
+    angle_indices = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5}  # Map plot position to angle index
+    
     # Iterate over each plot data
-    for plot_name, plot_data in data.items():
-        # Create a new plot
+    for plot_idx, (plot_name, plot_data) in enumerate(data.items()):
+        # Create a new plot with larger figure
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
         y_series = pd.Series(plot_data['y'])
         x_values = plot_data['x']
-        y_values = y_series.values  # Keep NaN values
+        y_values = y_series.values
 
         # Check if all values in y_series are NaN or empty
         if y_series.isnull().all() or y_series.count() < 10:
-            # Save a "null graph"
             plot_filename = f'{exercise_folder}/{plot_name}.jpeg'
-
-            # Create a "null graph"
-            plt.figure()
-            plt.text(
-                0.5, 0.5, "No Data Available", fontsize=18, color="gray", ha="center", va="center", alpha=0.7
-            )
-            plt.axis("off")  # Hide axes
+            plt.text(0.5, 0.5, "No Data Available", fontsize=18, color="gray", 
+                    ha="center", va="center", alpha=0.7, transform=ax.transAxes)
+            ax.axis("off")
             plt.title(plot_name[:-2], fontsize=16, weight="bold", y=0.9)
-            plt.savefig(plot_filename, bbox_inches="tight", pad_inches=0, dpi=100)
+            plt.savefig(plot_filename, bbox_inches="tight", pad_inches=0, dpi=120)
             plt.close()
             continue
 
-        # Plot the graph; matplotlib handles NaN by breaking the line
-        plt.plot(x_values, y_values)
-
-        # Highlight NaN values with red dots at y=0
-        nan_indices = np.where(pd.isnull(y_values))[0]  # Find indices of NaN values
+        # Get ROM thresholds for this angle
+        angle_idx = angle_indices.get(plot_idx, plot_idx)
+        rom_up_lb, rom_down_ub, hardcoded_up_ub, hardcoded_down_lb = get_rom_thresholds_for_graph(
+            exercise, angle_idx)
+        
+        # Calculate y-axis limits
+        valid_y = [v for v in y_values if not np.isnan(v)]
+        if valid_y:
+            y_min = min(valid_y) - 10
+            y_max = max(valid_y) + 10
+        else:
+            y_min, y_max = 0, 180
+        
+        # Extend limits to include thresholds
+        all_thresholds = [t for t in [rom_up_lb, rom_down_ub, hardcoded_up_ub, hardcoded_down_lb] if t is not None]
+        if all_thresholds:
+            y_min = min(y_min, min(all_thresholds) - 5)
+            y_max = max(y_max, max(all_thresholds) + 5)
+        
+        ax.set_ylim(max(0, y_min), min(180, y_max))
+        
+        # ========== Draw threshold zones ==========
+        x_range = [x_values[0], x_values[-1]]
+        
+        # Hardcoded safety zones (danger zones)
+        if hardcoded_up_ub is not None:
+            ax.axhline(y=hardcoded_up_ub, color='red', linestyle='--', linewidth=1.5, 
+                      label=f'Safety Max: {hardcoded_up_ub:.0f} deg')
+            ax.fill_between(x_range, hardcoded_up_ub, y_max + 10, color='red', alpha=0.1)
+        
+        if hardcoded_down_lb is not None and hardcoded_down_lb > 0:
+            ax.axhline(y=hardcoded_down_lb, color='red', linestyle='--', linewidth=1.5,
+                      label=f'Safety Min: {hardcoded_down_lb:.0f} deg')
+            ax.fill_between(x_range, 0, hardcoded_down_lb, color='red', alpha=0.1)
+        
+        # ROM personalized thresholds (success zones)
+        if rom_up_lb is not None:
+            ax.axhline(y=rom_up_lb, color='green', linestyle='-', linewidth=2,
+                      label=f'ROM Goal (UP): {rom_up_lb:.0f} deg')
+        
+        if rom_down_ub is not None:
+            ax.axhline(y=rom_down_ub, color='orange', linestyle='-', linewidth=2,
+                      label=f'ROM Goal (DOWN): {rom_down_ub:.0f} deg')
+        
+        # Success zone shading
+        if rom_up_lb is not None and hardcoded_up_ub is not None:
+            ax.fill_between(x_range, rom_up_lb, hardcoded_up_ub, color='lightgreen', alpha=0.3)
+        
+        if rom_down_ub is not None and hardcoded_down_lb is not None:
+            ax.fill_between(x_range, hardcoded_down_lb, rom_down_ub, color='lightgreen', alpha=0.3)
+        
+        # ========== Plot the actual data ==========
+        ax.plot(x_values, y_values, 'b-', linewidth=1.5, label='Actual Movement')
+        
+        # Highlight NaN values with red dots
+        nan_indices = np.where(pd.isnull(y_values))[0]
         if len(nan_indices) > 0:
-            plt.scatter(
-                [x_values[i] for i in nan_indices],
-                [0 for _ in nan_indices],  # Placeholders at y=0 for NaN
-                color='red',
-                label="No Data",
-                zorder=5
-            )
-
-        # Set the font size
-        fontsize = 16
-
-        plt.xlabel('מספר מדידה'[::-1], fontsize=fontsize, weight='bold')
-        plt.ylabel('זווית'[::-1], fontsize=fontsize, weight='bold')
-        plt.title(plot_name[:-2], fontsize=16, weight="bold", y=1)
-
-        # Save the plot as an image file
+            ax.scatter([x_values[i] for i in nan_indices], 
+                      [y_min for _ in nan_indices],
+                      color='red', marker='x', s=30, label="No Data", zorder=5)
+        
+        # ========== Calculate statistics ==========
+        stats_text = ""
+        if valid_y:
+            min_val = min(valid_y)
+            max_val = max(valid_y)
+            avg_val = np.mean(valid_y)
+            std_val = np.std(valid_y)
+            
+            # Count time in success zone
+            in_up_zone = 0
+            in_down_zone = 0
+            for v in valid_y:
+                if rom_up_lb is not None and hardcoded_up_ub is not None:
+                    if rom_up_lb <= v <= hardcoded_up_ub:
+                        in_up_zone += 1
+                if rom_down_ub is not None:
+                    if v <= rom_down_ub:
+                        in_down_zone += 1
+            
+            up_pct = (in_up_zone / len(valid_y) * 100) if len(valid_y) > 0 else 0
+            down_pct = (in_down_zone / len(valid_y) * 100) if len(valid_y) > 0 else 0
+            
+            stats_text = f"Min: {min_val:.1f} | Max: {max_val:.1f} | Avg: {avg_val:.1f} | Std: {std_val:.1f}"
+            if rom_up_lb is not None:
+                stats_text += f"\nIn UP Zone: {up_pct:.0f}%"
+            if rom_down_ub is not None:
+                stats_text += f" | In DOWN Zone: {down_pct:.0f}%"
+        
+        # ========== Labels and styling ==========
+        fontsize = 12
+        ax.set_xlabel('Measurement Number', fontsize=fontsize)
+        ax.set_ylabel('Angle (degrees)', fontsize=fontsize)
+        ax.set_title(plot_name[:-2], fontsize=14, weight="bold")
+        
+        # Add statistics as text box
+        if stats_text:
+            ax.text(0.02, 0.02, stats_text, transform=ax.transAxes, fontsize=9,
+                   verticalalignment='bottom', bbox=dict(boxstyle='round', 
+                   facecolor='white', alpha=0.8, edgecolor='gray'))
+        
+        # Legend
+        ax.legend(loc='upper right', fontsize=8, framealpha=0.9)
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save the plot
         plot_filename = f'{exercise_folder}/{plot_name}.jpeg'
-        plt.savefig(plot_filename, dpi=100)
-        plt.close()  # Close the plot to clear the figure
+        plt.savefig(plot_filename, dpi=120, bbox_inches='tight')
+        plt.close()
     
-    print(f"[Excel] Saved graphs to: {exercise_folder}")
+    print(f"[Excel] Saved enhanced graphs to: {exercise_folder}")
 
 
 def success_worksheet():
@@ -704,69 +831,101 @@ def create_and_save_table_with_calculations(data, exercise):
 
     # Set the maximum title length
     max_title_length = 32  # As specified
+    
+    # Get angle indices for ROM lookup
+    angle_indices = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5}
 
     # Iterate over each table data (each table is for an angle/distance)
-    for table_name, table_data in data.items():
+    for table_idx, (table_name, table_data) in enumerate(data.items()):
         # Perform calculations (min, max, avg, std)
-        # Create a new plot
         y_series = pd.Series(table_data['y'])
         y_values = y_series.dropna().tolist()
 
         # Center-pad the title to 32 characters
         title_text = table_name[:-2]
-        display_title = title_text.center(max_title_length)  # Pad evenly on both sides
+        display_title = title_text.center(max_title_length)
+
+        # Get ROM thresholds for this angle
+        angle_idx = angle_indices.get(table_idx, table_idx)
+        rom_up_lb, rom_down_ub, hardcoded_up_ub, hardcoded_down_lb = get_rom_thresholds_for_graph(
+            exercise, angle_idx)
 
         if len(y_values) > 0:
             min_val = f"{min(y_values):.2f}"
             max_val = f"{max(y_values):.2f}"
             average = f"{(sum(y_values) / len(y_values)):.2f}"
             stdev = f"{np.std(y_values):.2f}"
+            
+            # Calculate time in zones
+            in_up_zone = 0
+            in_down_zone = 0
+            for v in y_values:
+                if rom_up_lb is not None and hardcoded_up_ub is not None:
+                    if rom_up_lb <= v <= hardcoded_up_ub:
+                        in_up_zone += 1
+                if rom_down_ub is not None:
+                    if v <= rom_down_ub:
+                        in_down_zone += 1
+            
+            up_pct = f"{(in_up_zone / len(y_values) * 100):.0f}%" if len(y_values) > 0 else "-"
+            down_pct = f"{(in_down_zone / len(y_values) * 100):.0f}%" if len(y_values) > 0 else "-"
         else:
-            min_val = "אין נתונים"[::-1]
-            max_val = "אין נתונים"[::-1]
-            average = "אין נתונים"[::-1]
-            stdev = "אין נתונים"[::-1]
+            min_val = "-"
+            max_val = "-"
+            average = "-"
+            stdev = "-"
+            up_pct = "-"
+            down_pct = "-"
 
-        # Prepare data for the table
+        # Prepare ROM threshold strings
+        rom_up_str = f"{rom_up_lb:.0f}" if rom_up_lb is not None else "-"
+        rom_down_str = f"{rom_down_ub:.0f}" if rom_down_ub is not None else "-"
+        safety_up_str = f"{hardcoded_up_ub:.0f}" if hardcoded_up_ub is not None else "-"
+        safety_down_str = f"{hardcoded_down_lb:.0f}" if hardcoded_down_lb is not None else "-"
+
+        # Prepare data for the enhanced table
         calculation_data = {
-            'ערכים'[::-1]: [min_val, max_val, average, stdev],  # Reverse Hebrew labels
-            'מדדים'[::-1]: [s[::-1] for s in ['מינימום', 'מקסימום', 'ממוצע', 'סטיית תקן']]  # Reverse Hebrew labels
+            'Value': [min_val, max_val, average, stdev, rom_up_str, rom_down_str, safety_up_str, up_pct],
+            'Metric': ['Minimum', 'Maximum', 'Average', 'Std Dev', 'ROM Goal (UP)', 'ROM Goal (DOWN)', 
+                      'Safety Max', 'Time in UP Zone']
         }
 
         # Create a pandas DataFrame
         df = pd.DataFrame(calculation_data)
 
-        # Create a new figure for the table only and set the background color
-        fig, ax = plt.subplots(figsize=(2, 2))  # Adjust figure size to accommodate both table and header
-        fig.patch.set_facecolor('#deeaf7')  # Set the background color of the figure
+        # Create a new figure for the table - slightly larger
+        fig, ax = plt.subplots(figsize=(3, 2.5))
+        fig.patch.set_facecolor('#deeaf7')
 
-        # Hide axes completely (ensures no space around the table)
+        # Hide axes completely
         ax.axis('off')
 
-        # Add the table name as a header to the top of the figure
-        ax.text(0.5, 0.9, display_title, ha='center', fontsize=13, weight='bold', transform=ax.transAxes)
+        # Add the table name as a header
+        ax.text(0.5, 0.95, display_title, ha='center', fontsize=11, weight='bold', transform=ax.transAxes)
 
-        # Add the table to the figure with bold headers
+        # Add the table to the figure
         table = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
 
         # Style the table
         table.auto_set_font_size(False)
-        table.set_fontsize(12)
-        table.scale(1.5, 1.3)  # Make the columns narrower by reducing the width scaling
+        table.set_fontsize(10)
+        table.scale(1.4, 1.2)
 
-        # Set the background color for the cells and the text properties
+        # Set colors based on content
         for (i, j), cell in table.get_celld().items():
             if i == 0:  # Header row
-                cell.set_text_props(weight='bold', fontsize=12)  # Set bold and increase font size
+                cell.set_text_props(weight='bold', fontsize=10)
+                cell.set_facecolor('#4472c4')
+                cell.set_text_props(color='white', weight='bold')
+            elif i >= 5 and i <= 7:  # ROM/Safety rows - highlight
+                cell.set_facecolor('#e2efda')  # Light green
             else:
-                cell.set_fontsize(12)  # Set a slightly smaller font for data rows
+                cell.set_facecolor('#ffffff')
 
-            cell.set_facecolor('#ffffff')  # White background for header cells
-
-        # Save the table as an image with the background color and no transparency
+        # Save the table
         table_filename = f'{exercise_folder}/{table_name}.png'
-        plt.savefig(table_filename, bbox_inches='tight', pad_inches=0, dpi=100)
-        plt.close()  # Close the figure to clear memory
+        plt.savefig(table_filename, bbox_inches='tight', pad_inches=0, dpi=120)
+        plt.close()
     
     print(f"[Excel] Saved tables to: {exercise_folder}")
 
@@ -1085,6 +1244,167 @@ def load_patient_rom(patient_id):
 
 
 
+
+
+def save_rom_calculation_report(patient_id, exercise_name, raw_data, calculated_thresholds):
+    """
+    Save ROM calculation details to an Excel file for transparency and reporting.
+    
+    Creates a detailed report showing:
+    - Raw angle data collected during ROM assessment
+    - Peak/Valley detection results
+    - Final calculated thresholds
+    
+    Args:
+        patient_id: Patient ID
+        exercise_name: Name of the exercise
+        raw_data: Dict with raw angle measurements per side
+                  e.g., {'right': [angles...], 'left': [angles...]}
+        calculated_thresholds: Dict with final thresholds
+                  e.g., {'up_lb_right': 85, 'up_ub_right': 120, ...}
+    """
+    import os
+    from datetime import datetime
+    
+    # Create folder for ROM reports
+    report_folder = f"Patients/{patient_id}/ROM_Calculation_Reports"
+    os.makedirs(report_folder, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    report_path = f"{report_folder}/{exercise_name}_{timestamp}.xlsx"
+    
+    try:
+        workbook = openpyxl.Workbook()
+        
+        # ========== Sheet 1: Summary ==========
+        summary_sheet = workbook.active
+        summary_sheet.title = "Summary"
+        
+        # Header
+        summary_sheet['A1'] = "ROM Calculation Report"
+        summary_sheet['A2'] = f"Patient ID: {patient_id}"
+        summary_sheet['A3'] = f"Exercise: {exercise_name}"
+        summary_sheet['A4'] = f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        # Thresholds table
+        summary_sheet['A6'] = "Calculated Thresholds"
+        summary_sheet['A7'] = "Metric"
+        summary_sheet['B7'] = "Right"
+        summary_sheet['C7'] = "Left"
+        summary_sheet['D7'] = "Unified"
+        
+        row = 8
+        metrics = [
+            ("UP Lower Bound (ROM)", "up_lb"),
+            ("UP Upper Bound (Hardcoded)", "up_ub"),
+            ("DOWN Lower Bound (Hardcoded)", "down_lb"),
+            ("DOWN Upper Bound (ROM)", "down_ub"),
+        ]
+        
+        for metric_name, key in metrics:
+            summary_sheet.cell(row=row, column=1, value=metric_name)
+            right_val = calculated_thresholds.get(f"{key}_right", "-")
+            left_val = calculated_thresholds.get(f"{key}_left", "-")
+            
+            # Calculate unified
+            if isinstance(right_val, (int, float)) and isinstance(left_val, (int, float)):
+                if "lb" in key:
+                    unified = min(right_val, left_val)
+                else:
+                    unified = max(right_val, left_val)
+            else:
+                unified = "-"
+            
+            summary_sheet.cell(row=row, column=2, value=right_val)
+            summary_sheet.cell(row=row, column=3, value=left_val)
+            summary_sheet.cell(row=row, column=4, value=unified)
+            row += 1
+        
+        # Statistics
+        row += 2
+        summary_sheet.cell(row=row, column=1, value="Raw Data Statistics")
+        row += 1
+        summary_sheet.cell(row=row, column=1, value="Statistic")
+        summary_sheet.cell(row=row, column=2, value="Right")
+        summary_sheet.cell(row=row, column=3, value="Left")
+        row += 1
+        
+        for side_key, side_name, col in [("right", "Right", 2), ("left", "Left", 3)]:
+            if side_key in raw_data and raw_data[side_key]:
+                angles = [a for a in raw_data[side_key] if a is not None and not np.isnan(a)]
+                if angles:
+                    summary_sheet.cell(row=row, column=1, value="Count")
+                    summary_sheet.cell(row=row, column=col, value=len(angles))
+                    summary_sheet.cell(row=row+1, column=1, value="Min")
+                    summary_sheet.cell(row=row+1, column=col, value=f"{min(angles):.1f}")
+                    summary_sheet.cell(row=row+2, column=1, value="Max")
+                    summary_sheet.cell(row=row+2, column=col, value=f"{max(angles):.1f}")
+                    summary_sheet.cell(row=row+3, column=1, value="Mean")
+                    summary_sheet.cell(row=row+3, column=col, value=f"{np.mean(angles):.1f}")
+                    summary_sheet.cell(row=row+4, column=1, value="Std Dev")
+                    summary_sheet.cell(row=row+4, column=col, value=f"{np.std(angles):.1f}")
+        
+        # ========== Sheet 2: Raw Data ==========
+        raw_sheet = workbook.create_sheet("Raw Data")
+        raw_sheet['A1'] = "Measurement #"
+        raw_sheet['B1'] = "Right Angle"
+        raw_sheet['C1'] = "Left Angle"
+        
+        max_len = max(
+            len(raw_data.get("right", [])),
+            len(raw_data.get("left", []))
+        )
+        
+        for i in range(max_len):
+            raw_sheet.cell(row=i+2, column=1, value=i+1)
+            if i < len(raw_data.get("right", [])):
+                val = raw_data["right"][i]
+                if val is not None and not np.isnan(val):
+                    raw_sheet.cell(row=i+2, column=2, value=f"{val:.2f}")
+            if i < len(raw_data.get("left", [])):
+                val = raw_data["left"][i]
+                if val is not None and not np.isnan(val):
+                    raw_sheet.cell(row=i+2, column=3, value=f"{val:.2f}")
+        
+        # ========== Sheet 3: Calculation Steps ==========
+        calc_sheet = workbook.create_sheet("Calculation Steps")
+        calc_sheet['A1'] = "Step"
+        calc_sheet['B1'] = "Description"
+        calc_sheet['C1'] = "Right"
+        calc_sheet['D1'] = "Left"
+        
+        steps = [
+            ("1", "Collect raw angles during ROM assessment", "-", "-"),
+            ("2", "Detect peaks (UP position)", 
+             f"{calculated_thresholds.get('up_ub_right', '-')}", 
+             f"{calculated_thresholds.get('up_ub_left', '-')}"),
+            ("3", "Detect valleys (DOWN position)", 
+             f"{calculated_thresholds.get('down_lb_right', '-')}", 
+             f"{calculated_thresholds.get('down_lb_left', '-')}"),
+            ("4", "Calculate UP lower bound (ROM goal)", 
+             f"{calculated_thresholds.get('up_lb_right', '-')}", 
+             f"{calculated_thresholds.get('up_lb_left', '-')}"),
+            ("5", "Calculate DOWN upper bound (ROM goal)", 
+             f"{calculated_thresholds.get('down_ub_right', '-')}", 
+             f"{calculated_thresholds.get('down_ub_left', '-')}"),
+            ("6", "Apply hardcoded safety limits", "See Summary", "See Summary"),
+        ]
+        
+        for i, (step_num, desc, right, left) in enumerate(steps):
+            calc_sheet.cell(row=i+2, column=1, value=step_num)
+            calc_sheet.cell(row=i+2, column=2, value=desc)
+            calc_sheet.cell(row=i+2, column=3, value=right)
+            calc_sheet.cell(row=i+2, column=4, value=left)
+        
+        workbook.save(report_path)
+        print(f"[ROM Report] Saved calculation report to: {report_path}")
+        return report_path
+        
+    except Exception as e:
+        print(f"[ROM Report] Error saving report: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 if __name__ == "__main__":
